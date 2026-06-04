@@ -29,7 +29,11 @@ If you need implementation history or change tracking, see `CHANGES.md`.
 - `internal/backupapp/httpapi.go`: built-in REST API routes
 - `internal/backupapp/platform.go`: runtime profile, rendered systemd units, and shared read helpers
 - `cmd/sdl-db-backup-tui/main.go`: Bubble Tea terminal UI launcher
-- `internal/tui/app.go`: component-style TUI model, screens, command palette, config editor, log viewer, and async event handling
+- `internal/tui/app.go`: TUI orchestration, state, and input routing
+- `internal/tui/views.go`: page rendering, panels, and viewport-backed content views
+- `internal/tui/input.go`: keyboard handling and focus routing
+- `internal/tui/cmds.go`: async command helpers and loaders
+- `internal/tui/helpers.go`: backup/schedule/systemd helpers and shared TUI utilities
 - `cmd/sdl-db-backup-health/main.go`: CLI health check for latest run, daily log path, and prerequisites
 - `cmd/sdl-db-backup-api/main.go`: REST API server
 - `mysql_full_backup.sh`: bash backup script
@@ -40,29 +44,39 @@ If you need implementation history or change tracking, see `CHANGES.md`.
 
 ## Setup (No Root)
 
-1. Create environment file:
-   - `cp sdl_db_backup/.env.example sdl_db_backup/.env`
+1. Install required host tools:
+   - `./scripts/install-tools.sh`
+   - This script stays repo-local: it can download a local Go toolchain under `.tools/` if Go is missing, but it does not use `apt`, `dpkg`, or `sudo`.
+   - It only checks for required host tools like `mysql`, `mysqldump`, `php`, `xtrabackup`, and `xbcloud` and will not modify the server package set.
+   - If you need the repo-local Go toolchain, source `./scripts/env.sh` in the current shell first.
+   - Optional: `./scripts/install-shortcuts.sh` to create `sdl-db-backup-tui` and `sdl-db-backup-run` in `~/.local/bin`.
+   - After that, you can run the shortcuts from any directory.
+
+2. Create environment file:
+   - `cp .env.example .env`
    - Set database credentials, logical/physical schedules, and S3 settings
 
-2. For Go testing (logs progress in terminal):
-   - `go run main.go`
-   - TUI: `go run ./cmd/sdl-db-backup-tui`
+3. For Go testing (logs progress in terminal):
+   - `./scripts/run-main`
+   - TUI: `./scripts/tui`
    - Health: `go run ./cmd/sdl-db-backup-health`
    - API: `go run ./cmd/sdl-db-backup-api`
 
-3. Ensure `go` is available to the service user:
+4. Ensure `go` is available to the service user:
    - `which go`
+   - If you are using the repo-local Go install, run `source ./scripts/env.sh` before invoking any `go run` command directly.
+   - If you installed the shortcuts, you can run `sdl-db-backup-tui` and `sdl-db-backup-run` from anywhere after `~/.local/bin` is on your `PATH`.
 
-4. Render or copy user units:
+5. Render or copy user units:
    - `mkdir -p ~/.config/systemd/user`
    - Use the TUI `Systemd` page or API `GET /api/v1/systemd` response to render host-specific unit content
    - If copying the template files directly, replace `{{WORKING_DIRECTORY}}`, `{{ENV_FILE}}`, and `{{SERVICE_UNIT_NAME}}` first
 
-5. Reload and enable timer:
+6. Reload and enable timer:
    - `systemctl --user daemon-reload`
    - `systemctl --user enable --now <your BACKUP_SYSTEMD_TIMER_NAME>`
 
-6. Verify:
+7. Verify:
    - `systemctl --user list-timers | grep sdl-db-backup`
    - `systemctl --user status <your BACKUP_SYSTEMD_TIMER_NAME>`
    - `journalctl --user -u <your BACKUP_SYSTEMD_SERVICE_NAME> -n 100 --no-pager`
@@ -554,11 +568,14 @@ curl \
 
 ## Duplicate Backup Audit
 
+Scheduled runs are intended to execute only as the `developer` user. The runner now refuses the scheduled `runner` path when it is launched as `root`, so any root-owned scheduled execution is a misconfiguration outside the normal user timer flow.
+
 If you still see both `root` and `developer` owned backup runs, the extra scheduler is outside this repo. Audit these locations:
 
 - `sudo crontab -l` and `/etc/cron.*`
 - `systemctl list-timers --all` and `systemctl list-units --type=service`
 - deployment hooks, supervisor configs, or any wrapper script that invokes both `main.go` and `mysql_full_backup.sh`
+- root-owned systemd units or timers that call `go run ./main.go` directly
 
 ## Temporary Test Overrides
 

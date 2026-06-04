@@ -6,3 +6,6 @@
 .cache/*
 
 .tmp-smoke/*
+.gocache/*
+.gotmp/*
+.tools/*

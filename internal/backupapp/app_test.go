@@ -96,6 +96,18 @@ func TestShouldLogPhysicalLine(t *testing.T) {
 	}
 }
 
+func TestShouldBlockScheduledRootRun(t *testing.T) {
+	if !shouldBlockScheduledRootRun("root", "runner") {
+		t.Fatalf("expected scheduled runner to be blocked for root")
+	}
+	if shouldBlockScheduledRootRun("root", "api") {
+		t.Fatalf("expected api-triggered run to remain allowed for root")
+	}
+	if shouldBlockScheduledRootRun("developer", "runner") {
+		t.Fatalf("expected runner to remain allowed for non-root user")
+	}
+}
+
 func TestBuildManualRunConfigLocalOnlyDisablesPhysical(t *testing.T) {
 	cfg := Config{
 		LogicalEnabled:          true,

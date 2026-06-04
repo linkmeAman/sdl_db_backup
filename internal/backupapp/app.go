@@ -145,6 +145,10 @@ const (
 	ManualRunPhysicalOnly ManualRunMode = "physical_only"
 )
 
+func shouldBlockScheduledRootRun(osUser, executionSource string) bool {
+	return normalizedExecutionSource(executionSource) == "runner" && strings.TrimSpace(osUser) == "root"
+}
+
 type ManualUploadMode string
 
 const (
@@ -2844,6 +2848,13 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		cfg.BackupDir,
 		cfg.LogDir,
 	)
+
+	if shouldBlockScheduledRootRun(record.OSUser, record.ExecutionSource) {
+		record.FailureReason = "scheduled backup blocked for root user; use the user-level developer timer/service"
+		log.Printf("refusing scheduled backup as root user: %s", record.FailureReason)
+		record.ExitCode = finalizeRun(cfg, &record, startedAt)
+		return record, nil
+	}
 
 	releaseLock, err := acquireLock(cfg.LockFile)
 	if err != nil {
