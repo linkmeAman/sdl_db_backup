@@ -8,7 +8,7 @@ OnCalendar=*-*-* 12:00:00
 OnCalendar=*-*-* 18:00:00
 Persistent=true
 AccuracySec=1min
-Unit=sdl-db-backup.service
+Unit={{SERVICE_UNIT_NAME}}
 
 [Install]
 WantedBy=timers.target

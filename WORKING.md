@@ -120,8 +120,8 @@ runRecord {
 ---
 
 ## Exit Code
-- `0` = success (all databases backed up)
-- `1` = partial or complete failure
+- `0` = success or warning-only run, including skipped missing tables that do not stop the backup
+- `1` = partial or complete failure with at least one real database backup error
 
 ---
 
@@ -202,4 +202,3 @@ The tool implements intelligent error classification:
 | Connection | Yes | Connection refused, server has gone away |
 | Timeout | Yes | Deadline exceeded, timed out |
 | Command | Yes | Other command errors |
-
