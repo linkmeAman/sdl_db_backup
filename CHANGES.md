@@ -1,5 +1,44 @@
 # SDL DB Backup — Changes Log
 
+## Current Architecture
+
+The project no longer relies on one large `main.go` flow only.
+
+- `main.go` and `main_sync_upload.go` are non-interactive entrypoints
+- `internal/backupapp/app.go` contains the shared backup engine and config logic
+- `internal/backupapp/httpapi.go` provides the built-in REST API
+- `internal/backupapp/platform.go` provides shared runtime/profile/systemd rendering helpers
+- `cmd/sdl-db-backup-tui/main.go` launches the Bubble Tea terminal UI
+- `internal/tui/app.go` contains the TUI model, screens, widgets, command palette, and async event handling
+- `cmd/sdl-db-backup-health/main.go` provides a health-check CLI
+- `cmd/sdl-db-backup-api/main.go` runs the REST API server
+
+Recent operator-facing changes:
+
+- replaced the utility-style TUI with a Bubble Tea operator console for dashboard, config editing, manual runs, logs, history, health checks, and user-systemd control
+- added a built-in REST API for CRM/backend integration across backup runs, config, schedules, logs, storage, health, runtime, and user-level systemd actions
+- added portable config and runtime metadata so runs record OS user, execution source, hostname, and pid
+- added configurable user unit names plus rendered unit previews for host-specific systemd installation
+- removed repo-shipped assumptions about one fixed working directory, home directory, or PHP upload host path from the main portable setup flow
+- added command palette, searchable config editing, unsaved-change handling, toasts, and live run output
+- added a Schedule page for backup timing, upload toggles, retention days, and permanent or temporary schedule changes
+- added temporary overrides stored at `<BACKUP_LOG_DIR>/backup-temporary-overrides.json`, which are honored by scheduled service runs until expiry without rewriting `.env`
+- added logical backup scope controls for selected databases and selected tables, defaulting to all granted databases and all tables
+- improved the manual backup scope controls so `Esc` returns from table selection and `c`/`n`/right arrow visibly continue to preview
+- added bulk and range selection for TUI backup scope, plus a multi-column table picker for large databases
+- added table search in the TUI backup scope picker, with filtered bulk selection and extra back keys from table selection
+- added permanent save from the TUI scope picker so selected databases/tables can be written to `.env` for scheduled logical backups
+- added global TUI notifications so commands, confirmations, saves, errors, and state changes are visible on every page
+- improved TUI layout sizing so content, sidebars, notifications, command palette, and confirmations share terminal height without clipping
+- added a CLI health report command
+- added an API server command
+- added daily aggregate logs alongside per-run logs
+- added `backup-runs.jsonl` as a structured run index
+- changed logical dump generation so dump files do not start with `USE db_name;`
+- added `--no-tablespaces` to logical dumps for least-privilege MySQL backup users
+
+See `README.md` for the current commands, TUI controls, logging layout, and configuration flow.
+
 ## Overview
 
 The original `main.go` performs MySQL dumps to `/mnt/volume_1/backup/mysql_backup/`.

@@ -1,16 +1,12 @@
 [Unit]
-Description=SDL MySQL Backup Runner
+Description=SDL DB Backup Runner
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/var/www/go-workspace/sdl/sdl_db_backup
-Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/root
-Environment=GOPATH=/root/go
-Environment=GOCACHE=/root/.cache/go-build
-Environment=BACKUP_ENV_FILE=/var/www/go-workspace/sdl/sdl_db_backup/.env
+WorkingDirectory={{WORKING_DIRECTORY}}
+Environment=BACKUP_ENV_FILE={{ENV_FILE}}
 ExecStart=/usr/bin/env go run ./main.go
 Nice=10
 IOSchedulingClass=best-effort

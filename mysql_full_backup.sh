@@ -15,7 +15,7 @@ DB_USER="${DB_USER:-}"
 DB_PASS="${DB_PASS:-}"
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-3306}"
-BACKUP_DIR="${BACKUP_DIR:-/mnt/volume_1/backup/mysql_backup}"
+BACKUP_DIR="${BACKUP_DIR:-$SCRIPT_DIR/backups}"
 MYSQL_BIN="${MYSQL_BIN:-mysql}"
 MYSQLDUMP_BIN="${MYSQLDUMP_BIN:-mysqldump}"
 
