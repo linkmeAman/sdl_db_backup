@@ -698,7 +698,11 @@ Main viewport composition:
 
 ## Files
 
-- TUI implementation: `internal/tui/app.go`
+- TUI orchestration: `internal/tui/app.go`
+- TUI views and panels: `internal/tui/views.go`
+- TUI keyboard routing: `internal/tui/input.go`
+- TUI async commands: `internal/tui/cmds.go`
+- TUI helpers and shared logic: `internal/tui/helpers.go`
 - TUI entrypoint: `cmd/sdl-db-backup-tui/main.go`
 - Backup engine: `internal/backupapp/app.go`
 - User systemd unit: `sdl-db-backup.service`
