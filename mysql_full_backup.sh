@@ -61,7 +61,10 @@ for DB in "${DATABASES[@]}"; do
     --routines \
     --triggers \
     --events \
+    --no-tablespaces \
     --set-gtid-purged=OFF \
+    --force \
+    --ignore-error=1356,1449,1227 \
     --databases "$DB" \
     | gzip -c > "$OUT_FILE"
   echo "Backed up ${DB} -> ${OUT_FILE}"

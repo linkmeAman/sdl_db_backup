@@ -304,13 +304,13 @@ func (m model) viewScopeSelector(width int) []string {
 			dbName = m.scopeDatabases[m.scopeDBIndex]
 		}
 		selectedCount := len(m.scopeSelectedTables[dbName])
-		lines = append(lines, title.Render(fmt.Sprintf("Tables in %s (%d selected)", dbName, selectedCount)), muted.Render("Selecting tables means only those tables are dumped for this database. No table selection means all tables."))
+		lines = append(lines, title.Render(fmt.Sprintf("Tables and Views in %s (%d selected)", dbName, selectedCount)), muted.Render("Selecting objects means only those tables or views that pass validation are dumped for this database. No selection means all validated tables and views."))
 		lines = append(lines, muted.Render("/ search   Space toggle   Ctrl+A select shown   v range   Ctrl+X clear   Enter continue   Esc back"))
 		if m.scopeSearchActive {
 			lines = append(lines, m.scopeTableSearch.View())
 		}
 		if len(m.scopeTables) == 0 {
-			lines = append(lines, "No tables discovered.")
+			lines = append(lines, "No tables or views discovered.")
 			return lines
 		}
 		lines = append(lines, m.scopeTableGridLines(width, dbName)...)
@@ -319,7 +319,7 @@ func (m model) viewScopeSelector(width int) []string {
 		return lines
 	}
 	lines = append(lines, title.Render("Databases"), muted.Render("No database selected means all databases. Selecting a database lets you include all its tables or choose specific tables."))
-	lines = append(lines, muted.Render("Ctrl+A selects all DBs. v starts/selects a range. Enter opens tables. Press n/right to preview."))
+	lines = append(lines, muted.Render("Ctrl+A selects all DBs. v starts/selects a range. Enter opens tables and views. Press n/right to preview."))
 	if m.scopeDBMark >= 0 && m.scopeDBMark < len(m.scopeDatabases) {
 		start, end := m.scopeDBRange()
 		lines = append(lines, muted.Render(fmt.Sprintf("Range mark: %s (%d selected by range)", m.scopeDatabases[m.scopeDBMark], end-start+1)))
@@ -333,9 +333,9 @@ func (m model) viewScopeSelector(width int) []string {
 		if m.scopeSelectedDBs[dbName] {
 			marker = "[x]"
 		}
-		tableText := "all tables"
+		tableText := "all tables and views"
 		if len(m.scopeSelectedTables[dbName]) > 0 {
-			tableText = fmt.Sprintf("%d selected tables", len(m.scopeSelectedTables[dbName]))
+			tableText = fmt.Sprintf("%d selected objects", len(m.scopeSelectedTables[dbName]))
 		}
 		line := fmt.Sprintf("%s %-32s %s", marker, dbName, tableText)
 		if i == m.scopeDBIndex {
@@ -478,7 +478,7 @@ func (m model) viewConfigHint(visible []int) string {
 		"DB_PASS":                           "Password for the logical backup MySQL user.",
 		"BACKUP_LOGICAL_SCHEDULE":           "When logical .sql.gz backups run. Prefer Schedule page presets for common timing.",
 		"BACKUP_LOGICAL_DATABASES":          "Comma-separated database include list. Empty means all granted non-system databases.",
-		"BACKUP_LOGICAL_TABLES":             "Per-database table include list like db1:users,orders;db2:events. Empty means all tables.",
+		"BACKUP_LOGICAL_TABLES":             "Per-database table/view include list like db1:users,orders;db2:events. Empty means all tables and views.",
 		"BACKUP_PHYSICAL_SCHEDULE":          "When physical xtrabackup direct-to-S3 runs.",
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED":  "Uploads completed logical backup folders after dump completion.",
 		"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED": "Physical backup requires this because physical mode streams directly to S3.",

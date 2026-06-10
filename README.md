@@ -87,7 +87,7 @@ Logical backup settings:
 - `BACKUP_LOGICAL_ENABLED=true|false`
 - `BACKUP_LOGICAL_SCHEDULE=always|disabled|daily@07:30|daily@00:00,06:00,12:00,18:00|weekly@sun,07:30|interval@24h`
 - `BACKUP_LOGICAL_DATABASES=db1,db2` or empty for all granted non-system databases
-- `BACKUP_LOGICAL_TABLES=db1:table_a,table_b;db2:table_c` or empty for all tables
+- `BACKUP_LOGICAL_TABLES=db1:table_a,table_b;db2:table_c` or empty for all validated tables/views
 - `BACKUP_LOGICAL_TIMEOUT_PER_DB=30m`
 - `BACKUP_LOGICAL_S3_UPLOAD_ENABLED=true|false`
 - `DB_USER` and `DB_PASS` are used for logical backups (`mysql` / `mysqldump`) and should point to a dedicated backup-only MySQL user
@@ -130,14 +130,14 @@ Notes:
 - `BACKUP_S3_UPLOAD_MODE=direct` uploads logical backup files from Go directly to S3 using `BACKUP_S3_KEY_ID` and `BACKUP_S3_KEY_SECRET`. `php` uses `BACKUP_S3_UPLOAD_SCRIPT`, `http` uses `BACKUP_S3_UPLOAD_URL`, and `auto` tries direct upload before falling back to PHP/HTTP.
 - The built-in API is disabled by default. Set `BACKUP_API_ENABLED=true` before starting `cmd/sdl-db-backup-api`.
 - API bearer auth is also disabled by default. When `BACKUP_API_AUTH_ENABLED=true`, every request must send `Authorization: Bearer <BACKUP_API_BEARER_TOKEN>`.
-- Logical backup scope is optional. Empty `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES` means the old behavior: back up every granted non-system database and all tables.
+- Logical backup scope is optional. Empty `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES` means the old behavior: back up every granted non-system database, all tables, and all views that pass the validation probe.
 - Table scope applies only to logical backups. Physical backup is a full MySQL data-file backup and is not table-selective.
 - Physical backup currently supports direct S3 streaming only. If `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false`, the physical backup is skipped.
 - Physical backup can use a different MySQL user from logical backup. `DB_USER` is for logical dumps, while `BACKUP_XTRABACKUP_USER` is for xtrabackup.
 - Logical dumps keep full schema coverage (tables, views, triggers, events, and routines) while using `--no-tablespaces` to avoid needing `PROCESS` for logical backups on newer MySQL 8.0 servers.
 - The logical backup MySQL user should not be an application/editor account. Grant it only `SELECT`, `SHOW VIEW`, `TRIGGER`, and `EVENT` on the application databases it must dump, plus global `SHOW_ROUTINE`.
 - `SHOW DATABASES` only returns databases the logical backup user can access. That is expected when you grant only the selected application databases.
-- When `BACKUP_LOGICAL_TABLES` is set, the runner checks the live schema first and skips any requested tables that no longer exist instead of failing the whole database dump.
+- When `BACKUP_LOGICAL_TABLES` is set, the runner checks the live schema first and skips any requested tables or views that no longer exist, fail validation, or are otherwise error-prone instead of failing the whole database dump.
 - The backup runner attempts to set `@@GLOBAL.max_execution_time=0` during logical dumps. A restricted backup user may not have that privilege; the warning is non-fatal and backups continue.
 - The physical backup MySQL user needs these grants: `BACKUP_ADMIN`, `PROCESS`, `RELOAD`, `LOCK TABLES`, `REPLICATION CLIENT`, plus `SELECT` on `performance_schema.replication_group_members` and `performance_schema.keyring_component_status` when those tables exist.
 - `daily` supports one or more fixed clock times. Example: `daily@00:00,06:00,12:00,18:00`.
@@ -329,14 +329,14 @@ From the `Backup` page:
 2. Choose `Upload Mode`
 3. Choose backup scope
    - Press `c`, `n`, or right arrow to continue with the current scope
-   - Press `Enter` on a database to inspect its tables
-   - Press `/` inside a table list to search/filter tables by name
-   - Press `Space` to select or clear a database/table
-   - Press `d` to select all listed databases, or all currently shown tables in the current database
+   - Press `Enter` on a database to inspect its tables and views
+   - Press `/` inside an object list to search/filter tables and views by name
+   - Press `Space` to select or clear a database/table/view
+   - Press `d` to select all listed databases, or all currently shown objects in the current database
    - Press `m`, move to another row, then press `s` to select that whole range
-   - Press `u` to clear the current range, or clear all table checks in the current database
-   - Press `PageUp` / `PageDown` or `Home` / `End` to move quickly through long table lists
-   - Press `Esc`, `b`, left arrow, or `h` inside a table list to return to the database list
+   - Press `u` to clear the current range, or clear all object checks in the current database
+   - Press `PageUp` / `PageDown` or `Home` / `End` to move quickly through long object lists
+   - Press `Esc`, `b`, left arrow, or `h` inside an object list to return to the database list
    - Press `p` or `Ctrl+S` to save the current selected scope permanently to `.env`
 4. Leave `Force Run Now` enabled if you want the run to ignore the saved schedule for that one execution
 5. Review the preview panel
@@ -351,10 +351,10 @@ Manual run notes:
 - physical backup is skipped in `local only` mode because physical backup currently supports direct S3 streaming only
 - database/table selection applies to logical backups only
 - no database selected means all granted databases
-- selected database with no selected tables means all tables in that database
+- selected database with no selected tables means all validated tables and views in that database
 - on the scope step, `c`, `n`, right arrow, or `l` moves forward to preview
-- table lists are shown in multiple columns when the terminal is wide enough
-- table search filters selection actions, so `d` selects only matching shown tables when a search is active
+- table/object lists are shown in multiple columns when the terminal is wide enough
+- table search filters selection actions, so `d` selects only matching shown objects when a search is active
 - permanent scope save writes `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES`; scheduled logical backups use that saved scope
 
 ### TUI Logs, Health, And Systemd
