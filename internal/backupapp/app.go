@@ -1643,7 +1643,7 @@ func filterDatabases(cfg config, discovered []string) []string {
 func listTables(cfg config, dbName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.DiscoveryTimeout)
 	defer cancel()
-	query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=%q AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName)
+	query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=%q AND TABLE_TYPE IN ('BASE TABLE','VIEW') ORDER BY TABLE_NAME", dbName)
 	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1658,7 +1658,22 @@ func listTables(cfg config, dbName string) ([]string, error) {
 			tables = append(tables, tableName)
 		}
 	}
-	return tables, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	brokenViews, err := discoverBrokenViews(cfg, dbName)
+	if err != nil {
+		log.Printf("warning: could not precheck views for database=%s while listing scope objects: %v", dbName, err)
+		return tables, nil
+	}
+	if len(brokenViews) == 0 {
+		return tables, nil
+	}
+
+	filtered := filterBrokenViewsFromObjects(tables, brokenViews)
+	log.Printf("database=%s: excluded %d broken view(s) from discovery: %s", dbName, len(brokenViews), strings.Join(brokenViews, ", "))
+	return filtered, nil
 }
 
 func selectedTablesForDatabase(cfg config, dbName string) []string {
@@ -1716,7 +1731,7 @@ func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
 	defer cancel()
 
-	query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA=%q", dbName)
+	query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA=%q ORDER BY TABLE_NAME", dbName)
 	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1740,18 +1755,36 @@ func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
 			continue
 		}
 		message := strings.TrimSpace(string(checkOut))
-		if classifyFailure(checkErr, message) == "view" {
-			broken = append(broken, viewName)
-			continue
+		category := classifyFailure(checkErr, message)
+		if category == "" {
+			category = "view"
 		}
-
-		log.Printf("warning: view precheck failed database=%s view=%s error=%s", dbName, viewName, chooseFailureMessage(checkErr, message))
+		broken = append(broken, viewName)
+		log.Printf("warning: skipping view database=%s view=%s category=%s error=%s", dbName, viewName, category, chooseFailureMessage(checkErr, message))
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan views output: %w", err)
 	}
 	return broken, nil
+}
+
+func filterBrokenViewsFromObjects(objects []string, brokenViews []string) []string {
+	if len(objects) == 0 || len(brokenViews) == 0 {
+		return objects
+	}
+	broken := make(map[string]struct{}, len(brokenViews))
+	for _, viewName := range brokenViews {
+		broken[viewName] = struct{}{}
+	}
+	filtered := make([]string, 0, len(objects))
+	for _, objectName := range objects {
+		if _, ok := broken[objectName]; ok {
+			continue
+		}
+		filtered = append(filtered, objectName)
+	}
+	return filtered
 }
 
 func buildMySQLDumpArgs(dbName string, tables []string, ignoreTables []string) []string {

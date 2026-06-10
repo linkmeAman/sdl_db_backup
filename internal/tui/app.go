@@ -1049,9 +1049,9 @@ func (m model) applyScopeToConfig(cfg *backupapp.Config) {
 
 func (m model) scopePreviewLines() []string {
 	if len(m.scopeSelectedDBs) == 0 {
-		return []string{"Scope: all granted databases and all tables"}
+		return []string{"Scope: all granted databases and all validated tables/views"}
 	}
-	lines := []string{"Scope: selected databases/tables"}
+	lines := []string{"Scope: selected databases/tables/views"}
 	dbs := make([]string, 0, len(m.scopeSelectedDBs))
 	for dbName := range m.scopeSelectedDBs {
 		dbs = append(dbs, dbName)
@@ -1060,7 +1060,7 @@ func (m model) scopePreviewLines() []string {
 	for _, dbName := range dbs {
 		tableMap := m.scopeSelectedTables[dbName]
 		if len(tableMap) == 0 {
-			lines = append(lines, "- "+dbName+": all tables")
+			lines = append(lines, "- "+dbName+": all validated tables/views")
 			continue
 		}
 		tables := make([]string, 0, len(tableMap))
@@ -1069,7 +1069,7 @@ func (m model) scopePreviewLines() []string {
 		}
 		slices.Sort(tables)
 		if len(tables) > 8 {
-			lines = append(lines, fmt.Sprintf("- %s: %d selected tables (%s, ...)", dbName, len(tables), strings.Join(tables[:6], ", ")))
+			lines = append(lines, fmt.Sprintf("- %s: %d selected objects (%s, ...)", dbName, len(tables), strings.Join(tables[:6], ", ")))
 			continue
 		}
 		lines = append(lines, "- "+dbName+": "+strings.Join(tables, ", "))
@@ -1082,9 +1082,9 @@ func (m model) scopeTableGridLines(width int, dbName string) []string {
 	visible := m.visibleScopeTableIndexes()
 	if len(visible) == 0 {
 		if strings.TrimSpace(m.scopeTableFilter) != "" {
-			return []string{warn.Render("No tables match /" + m.scopeTableFilter)}
+			return []string{warn.Render("No tables or views match /" + m.scopeTableFilter)}
 		}
-		return []string{"No tables discovered."}
+		return []string{"No tables or views discovered."}
 	}
 	pageSize := rows * cols
 	selectedPos := m.scopeVisibleTablePosition(m.scopeTableIndex)

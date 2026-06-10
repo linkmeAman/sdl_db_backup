@@ -72,6 +72,14 @@ func TestFilterRequestedTablesSkipsMissing(t *testing.T) {
 	}
 }
 
+func TestFilterBrokenViewsFromObjectsSkipsOnlyBrokenViews(t *testing.T) {
+	objects := []string{"accounts", "active_users", "audit_log", "broken_view"}
+	filtered := filterBrokenViewsFromObjects(objects, []string{"broken_view"})
+	if !slices.Equal(filtered, []string{"accounts", "active_users", "audit_log"}) {
+		t.Fatalf("unexpected filtered objects: %+v", filtered)
+	}
+}
+
 func TestShouldLogDumpLine(t *testing.T) {
 	if !shouldLogDumpLine(`mysqldump: Couldn't find table: "notification_event"`) {
 		t.Fatalf("expected missing-table dump line to be logged")
