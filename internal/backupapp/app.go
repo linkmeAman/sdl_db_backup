@@ -40,6 +40,7 @@ type config struct {
 	BackupDir               string
 	LogDir                  string
 	RunLogPath              string
+	MetricsFile             string
 	LockFile                string
 	ServiceUnitName         string
 	TimerUnitName           string
@@ -716,6 +717,7 @@ func loadConfigFromValues(values map[string]string) config {
 		BackupDir:               backupDir,
 		LogDir:                  logDir,
 		RunLogPath:              filepath.Join(logDir, "backup-runs.jsonl"),
+		MetricsFile:             getMapValue(values, "BACKUP_METRICS_FILE", defaultMetricsFilePath),
 		LockFile:                getMapValue(values, "BACKUP_LOCK_FILE", filepath.Join(logDir, "backup.lock")),
 		ServiceUnitName:         getMapValue(values, "BACKUP_SYSTEMD_SERVICE_NAME", "sdl-db-backup.service"),
 		TimerUnitName:           getMapValue(values, "BACKUP_SYSTEMD_TIMER_NAME", "sdl-db-backup.timer"),
@@ -922,6 +924,7 @@ func managedEnvKeys() []string {
 		"DB_PORT",
 		"BACKUP_DIR",
 		"BACKUP_LOG_DIR",
+		"BACKUP_METRICS_FILE",
 		"BACKUP_SYSTEMD_SERVICE_NAME",
 		"BACKUP_SYSTEMD_TIMER_NAME",
 		"MYSQL_BIN",
@@ -979,6 +982,7 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"DB_PORT":                           cfg.DBPort,
 		"BACKUP_DIR":                        cfg.BackupDir,
 		"BACKUP_LOG_DIR":                    cfg.LogDir,
+		"BACKUP_METRICS_FILE":               cfg.MetricsFile,
 		"BACKUP_SYSTEMD_SERVICE_NAME":       cfg.ServiceUnitName,
 		"BACKUP_SYSTEMD_TIMER_NAME":         cfg.TimerUnitName,
 		"MYSQL_BIN":                         cfg.MySQLBin,
@@ -2153,48 +2157,51 @@ func logS3Result(result map[string]interface{}) {
 	}
 }
 
-func uploadBackupToS3(cfg config, runFolder string) {
+func uploadBackupToS3(cfg config, runFolder string) error {
 	log.Printf("s3 upload: starting for folder %s", runFolder)
 	switch cfg.S3UploadMode {
 	case "", "direct":
 		if err := uploadBackupDirectToS3(cfg, runFolder); err != nil {
 			log.Printf("s3 upload direct error: %v", err)
+			return err
 		}
-		return
+		return nil
 	case "php", "cli":
 		if cfg.S3UploadScript == "" {
-			log.Printf("s3 upload skipped: BACKUP_S3_UPLOAD_MODE=%s requires BACKUP_S3_UPLOAD_SCRIPT", cfg.S3UploadMode)
-			return
+			err := fmt.Errorf("s3 upload skipped: BACKUP_S3_UPLOAD_MODE=%s requires BACKUP_S3_UPLOAD_SCRIPT", cfg.S3UploadMode)
+			log.Printf("%v", err)
+			return err
 		}
-		uploadBackupViaCLI(cfg, runFolder)
-		return
+		return uploadBackupViaCLI(cfg, runFolder)
 	case "http":
 		if cfg.S3UploadURL == "" {
-			log.Printf("s3 upload skipped: BACKUP_S3_UPLOAD_MODE=http requires BACKUP_S3_UPLOAD_URL")
-			return
+			err := fmt.Errorf("s3 upload skipped: BACKUP_S3_UPLOAD_MODE=http requires BACKUP_S3_UPLOAD_URL")
+			log.Printf("%v", err)
+			return err
 		}
-		uploadBackupViaHTTP(cfg, runFolder)
-		return
+		return uploadBackupViaHTTP(cfg, runFolder)
 	case "auto":
 		if cfg.S3KeyID != "" && cfg.S3KeySecret != "" && cfg.S3Bucket != "" {
 			if err := uploadBackupDirectToS3(cfg, runFolder); err != nil {
 				log.Printf("s3 upload direct error: %v", err)
+				return err
 			}
-			return
+			return nil
 		}
 		if cfg.S3UploadScript != "" {
-			uploadBackupViaCLI(cfg, runFolder)
-			return
+			return uploadBackupViaCLI(cfg, runFolder)
 		}
 		if cfg.S3UploadURL != "" {
-			uploadBackupViaHTTP(cfg, runFolder)
-			return
+			return uploadBackupViaHTTP(cfg, runFolder)
 		}
 	default:
-		log.Printf("s3 upload skipped: unsupported BACKUP_S3_UPLOAD_MODE=%q", cfg.S3UploadMode)
-		return
+		err := fmt.Errorf("s3 upload skipped: unsupported BACKUP_S3_UPLOAD_MODE=%q", cfg.S3UploadMode)
+		log.Printf("%v", err)
+		return err
 	}
-	log.Printf("s3 upload skipped: no direct credentials, PHP script, or HTTP endpoint configured")
+	err := errors.New("s3 upload skipped: no direct credentials, PHP script, or HTTP endpoint configured")
+	log.Printf("%v", err)
+	return err
 }
 
 func uploadBackupDirectToS3(cfg config, runFolder string) error {
@@ -2353,7 +2360,7 @@ func detectContentType(filePath string) string {
 	return "application/octet-stream"
 }
 
-func uploadBackupViaCLI(cfg config, runFolder string) {
+func uploadBackupViaCLI(cfg config, runFolder string) error {
 	log.Printf("s3 upload: using PHP CLI %s %s", cfg.S3PHPBin, cfg.S3UploadScript)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.S3UploadTimeout)
@@ -2365,29 +2372,31 @@ func uploadBackupViaCLI(cfg config, runFolder string) {
 	// Stream PHP's progress (STDERR) directly to our logger line by line.
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		log.Printf("s3 upload CLI error: stderr pipe: %v", err)
-		return
+		return fmt.Errorf("s3 upload CLI error: stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		log.Printf("s3 upload CLI error: start: %v", err)
-		return
+		return fmt.Errorf("s3 upload CLI error: start: %w", err)
 	}
 	scanner := bufio.NewScanner(stderrPipe)
 	for scanner.Scan() {
 		log.Printf("s3 upload: %s", scanner.Text())
 	}
 	if runErr := cmd.Wait(); runErr != nil {
-		log.Printf("s3 upload CLI error: %v", runErr)
+		return fmt.Errorf("s3 upload CLI error: %w", runErr)
 	}
 	var result map[string]interface{}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout.String())), &result); err != nil {
-		log.Printf("s3 upload CLI: could not parse output: %v | raw: %s", err, strings.TrimSpace(stdout.String()))
-		return
+		return fmt.Errorf("s3 upload CLI: could not parse output: %w | raw: %s", err, strings.TrimSpace(stdout.String()))
 	}
 	logS3Result(result)
+	if errFlag, _ := result["error"].(float64); errFlag != 0 {
+		status, _ := result["status"].(string)
+		return fmt.Errorf("s3 upload CLI reported failure status=%s", status)
+	}
+	return nil
 }
 
-func uploadBackupViaHTTP(cfg config, runFolder string) {
+func uploadBackupViaHTTP(cfg config, runFolder string) error {
 	log.Printf("s3 upload: using HTTP endpoint %s", cfg.S3UploadURL)
 
 	payload, err := json.Marshal(map[string]string{
@@ -2395,8 +2404,7 @@ func uploadBackupViaHTTP(cfg config, runFolder string) {
 		"backupPath": runFolder,
 	})
 	if err != nil {
-		log.Printf("s3 upload HTTP error: marshal payload: %v", err)
-		return
+		return fmt.Errorf("s3 upload HTTP error: marshal payload: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.S3UploadTimeout)
@@ -2404,24 +2412,29 @@ func uploadBackupViaHTTP(cfg config, runFolder string) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.S3UploadURL, bytes.NewReader(payload))
 	if err != nil {
-		log.Printf("s3 upload HTTP error: create request: %v", err)
-		return
+		return fmt.Errorf("s3 upload HTTP error: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
-		log.Printf("s3 upload HTTP error: %v", err)
-		return
+		return fmt.Errorf("s3 upload HTTP error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("s3 upload HTTP: failed to parse response (status %d): %v", resp.StatusCode, err)
-		return
+		return fmt.Errorf("s3 upload HTTP: failed to parse response (status %d): %w", resp.StatusCode, err)
 	}
 	logS3Result(result)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("s3 upload HTTP failed with status %d", resp.StatusCode)
+	}
+	if errFlag, _ := result["error"].(float64); errFlag != 0 {
+		status, _ := result["status"].(string)
+		return fmt.Errorf("s3 upload HTTP reported failure status=%s", status)
+	}
+	return nil
 }
 
 // runXtrabackupCmd runs xtrabackup with the given args, streaming its stderr
@@ -2838,6 +2851,10 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		Status:    "failed",
 		BackupDir: cfg.BackupDir,
 	}
+	logicalUploadRequired := false
+	logicalUploadSucceeded := false
+	physicalUploadRequired := false
+	physicalUploadSucceeded := false
 	record.OSUser = currentOSUser()
 	record.ExecutionSource = normalizedExecutionSource(cfg.ExecutionSource)
 	record.Hostname = currentHostname()
@@ -2853,6 +2870,19 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	defer func() {
 		log.SetOutput(origWriter)
 		log.SetFlags(origFlags)
+	}()
+	defer func() {
+		uploadRequired := logicalUploadRequired || physicalUploadRequired
+		uploadSucceeded := true
+		if logicalUploadRequired && !logicalUploadSucceeded {
+			uploadSucceeded = false
+		}
+		if physicalUploadRequired && !physicalUploadSucceeded {
+			uploadSucceeded = false
+		}
+		if uploadRequired || record.Status != "" {
+			emitBackupMetrics(cfg, record, startedAt, uploadRequired, uploadSucceeded)
+		}
 	}()
 
 	logCloser, logFilePath, dailyLogPath, err := initRunLogger(cfg.LogDir, runID, console)
@@ -3030,6 +3060,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	}
 
 	if physicalDue {
+		physicalUploadRequired = true
 		log.Printf("physical backup: enabled, starting direct S3 stream")
 		physResult := runPhysicalBackup(cfg, runFolder)
 		record.PhysicalBackup = &physResult
@@ -3039,6 +3070,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 				record.FailureReason = physResult.Error
 			}
 		} else {
+			physicalUploadSucceeded = true
 			state.PhysicalLastSuccess = time.Now().UTC().Format(time.RFC3339)
 			stateDirty = true
 		}
@@ -3075,7 +3107,12 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	if record.RunFolder != "" && logicalDue {
 		if cfg.LogicalS3UploadEnabled {
 			record.LogicalUploadRun = true
-			uploadBackupToS3(cfg, record.RunFolder)
+			logicalUploadRequired = true
+			if err := uploadBackupToS3(cfg, record.RunFolder); err != nil {
+				log.Printf("s3 upload error: %v", err)
+			} else {
+				logicalUploadSucceeded = true
+			}
 		} else {
 			record.LogicalUploadNote = "logical backup S3 upload skipped by BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false or logical backup not scheduled"
 			log.Printf("%s", record.LogicalUploadNote)
