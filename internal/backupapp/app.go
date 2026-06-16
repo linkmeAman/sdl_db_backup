@@ -1241,6 +1241,14 @@ func RunSystemdAction(ctx context.Context, envPath string, action SystemdAction)
 	return nil
 }
 
+func isIgnorablePipeReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "file already closed") || strings.Contains(text, "read |0:")
+}
+
 func LoadRecentJournal(ctx context.Context, unit string, lines int) (string, error) {
 	if lines <= 0 {
 		lines = 50
@@ -2752,11 +2760,11 @@ func runPhysicalBackup(cfg config, runDir string) physicalBackupResult {
 
 	result.Duration = time.Since(started).Round(time.Millisecond).String()
 
-	if xtrabackupScan.err != nil {
+	if xtrabackupScan.err != nil && !isIgnorablePipeReadError(xtrabackupScan.err) {
 		result.Error = fmt.Sprintf("read xtrabackup stderr: %v", xtrabackupScan.err)
 		return result
 	}
-	if xbcloudScan.err != nil {
+	if xbcloudScan.err != nil && !isIgnorablePipeReadError(xbcloudScan.err) {
 		result.Error = fmt.Sprintf("read xbcloud stderr: %v", xbcloudScan.err)
 		return result
 	}
@@ -2855,6 +2863,8 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	logicalUploadSucceeded := false
 	physicalUploadRequired := false
 	physicalUploadSucceeded := false
+	var logCloser io.Closer
+	stopRealtimeMetrics := func() {}
 	record.OSUser = currentOSUser()
 	record.ExecutionSource = normalizedExecutionSource(cfg.ExecutionSource)
 	record.Hostname = currentHostname()
@@ -2868,10 +2878,6 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetOutput(console)
 	defer func() {
-		log.SetOutput(origWriter)
-		log.SetFlags(origFlags)
-	}()
-	defer func() {
 		uploadRequired := logicalUploadRequired || physicalUploadRequired
 		uploadSucceeded := true
 		if logicalUploadRequired && !logicalUploadSucceeded {
@@ -2880,16 +2886,23 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		if physicalUploadRequired && !physicalUploadSucceeded {
 			uploadSucceeded = false
 		}
+		stopRealtimeMetrics()
 		if uploadRequired || record.Status != "" {
-			emitBackupMetrics(cfg, record, startedAt, uploadRequired, uploadSucceeded)
+			emitFinalBackupMetrics(cfg, record, startedAt, uploadRequired, uploadSucceeded)
 		}
+		if logCloser != nil {
+			if err := logCloser.Close(); err != nil {
+				log.Printf("warning: failed to close run logger: %v", err)
+			}
+		}
+		log.SetOutput(origWriter)
+		log.SetFlags(origFlags)
 	}()
 
 	logCloser, logFilePath, dailyLogPath, err := initRunLogger(cfg.LogDir, runID, console)
 	if err != nil {
 		log.Printf("warning: persistent run logging is unavailable: %v", err)
 	} else {
-		defer logCloser.Close()
 		record.LogFile = logFilePath
 		log.Printf("run log file: %s", logFilePath)
 		log.Printf("daily log file: %s", dailyLogPath)
@@ -2911,6 +2924,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		cfg.BackupDir,
 		cfg.LogDir,
 	)
+	stopRealtimeMetrics = startRealtimeBackupMetricsEmitter(cfg, startedAt)
 
 	if shouldBlockScheduledRootRun(record.OSUser, record.ExecutionSource) {
 		record.FailureReason = "scheduled backup blocked for root user; use the user-level developer timer/service"
