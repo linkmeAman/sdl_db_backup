@@ -3,6 +3,7 @@ package backupapp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -101,6 +102,18 @@ func TestShouldLogPhysicalLine(t *testing.T) {
 	}
 	if shouldLogPhysicalLine("xbcloud", "xbcloud: [0] successfully uploaded chunk: file") {
 		t.Fatalf("expected xbcloud chunk line to be suppressed")
+	}
+}
+
+func TestIsIgnorablePipeReadError(t *testing.T) {
+	if !isIgnorablePipeReadError(errors.New("read |0: file already closed")) {
+		t.Fatalf("expected closed pipe read error to be ignored")
+	}
+	if !isIgnorablePipeReadError(errors.New("read /proc/self/fd/3: file already closed")) {
+		t.Fatalf("expected generic file already closed error to be ignored")
+	}
+	if isIgnorablePipeReadError(errors.New("permission denied")) {
+		t.Fatalf("expected unrelated read error to remain fatal")
 	}
 }
 

@@ -129,6 +129,7 @@ API settings:
 Notes:
 - Logical backup upload and physical backup upload are separate. Logical upload is controlled by `BACKUP_LOGICAL_S3_UPLOAD_ENABLED`. Physical upload is controlled by `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`.
 - After each run, the runner writes Prometheus textfile metrics to `BACKUP_METRICS_FILE` or `/var/lib/node_exporter/textfile_collector/sdl_db_backup.prom` by default for Node Exporter textfile collection.
+- While a backup is running, the same metrics file is refreshed periodically so Prometheus/Grafana can show live run state via `backup_run_in_progress`, `backup_current_run_start_timestamp`, `backup_current_run_duration_seconds`, and `backup_metrics_last_update_timestamp`.
 - `BACKUP_S3_UPLOAD_MODE=direct` uploads logical backup files from Go directly to S3 using `BACKUP_S3_KEY_ID` and `BACKUP_S3_KEY_SECRET`. `php` uses `BACKUP_S3_UPLOAD_SCRIPT`, `http` uses `BACKUP_S3_UPLOAD_URL`, and `auto` tries direct upload before falling back to PHP/HTTP.
 - The built-in API is disabled by default. Set `BACKUP_API_ENABLED=true` before starting `cmd/sdl-db-backup-api`.
 - API bearer auth is also disabled by default. When `BACKUP_API_AUTH_ENABLED=true`, every request must send `Authorization: Bearer <BACKUP_API_BEARER_TOKEN>`.

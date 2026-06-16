@@ -28,7 +28,7 @@ func TestWriteBackupMetricsFileWritesPrometheusTextfile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdl_db_backup.prom")
 	snapshot := backupMetricsSnapshot{
-		RunTimestamp:     time.Unix(1760000000, 0).UTC(),
+		RunTimestamp:     1760000000,
 		SuccessTimestamp: 1759999900,
 		DurationSeconds:  12.345,
 		SizeBytes:        4096,
@@ -58,6 +58,10 @@ func TestWriteBackupMetricsFileWritesPrometheusTextfile(t *testing.T) {
 		"backup_last_size_bytes{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 4096",
 		"backup_last_status{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1",
 		"backup_upload_success{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1",
+		"backup_run_in_progress{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 0",
+		"backup_current_run_start_timestamp{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 0",
+		"backup_current_run_duration_seconds{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 0.000",
+		"backup_metrics_last_update_timestamp{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 0",
 	}
 	for _, want := range required {
 		if !strings.Contains(text, want) {
@@ -96,7 +100,7 @@ func TestBuildBackupMetricsSnapshotPreservesPreviousSuccessTimestampOnFailure(t 
 			{Name: "db1", SizeBytes: 2048},
 		},
 	}
-	snapshot := buildBackupMetricsSnapshot(cfg, record, time.Now().Add(-3*time.Second), true, false)
+	snapshot := buildFinalBackupMetricsSnapshot(cfg, record, time.Now().Add(-3*time.Second), true, false)
 	if snapshot.SuccessTimestamp != 1700000000 {
 		t.Fatalf("expected success timestamp preserved, got %d", snapshot.SuccessTimestamp)
 	}
@@ -108,5 +112,40 @@ func TestBuildBackupMetricsSnapshotPreservesPreviousSuccessTimestampOnFailure(t 
 	}
 	if snapshot.SizeBytes != 2048 {
 		t.Fatalf("expected artifact size preserved, got %d", snapshot.SizeBytes)
+	}
+}
+
+func TestBuildInProgressBackupMetricsSnapshotPreservesPreviousFinalMetrics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdl_db_backup.prom")
+	existing := strings.Join([]string{
+		"backup_last_run_timestamp{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1700000100",
+		"backup_last_success_timestamp{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1700000000",
+		"backup_last_duration_seconds{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 8.500",
+		"backup_last_size_bytes{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1234",
+		"backup_last_status{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1",
+		"backup_upload_success{job=\"sdl_db_backup\",service=\"mysql\",env=\"pilot\"} 1",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(existing), 0o640); err != nil {
+		t.Fatalf("write existing metrics: %v", err)
+	}
+
+	cfg := config{MetricsFile: path}
+	startedAt := time.Now().Add(-10 * time.Second)
+	snapshot := buildInProgressBackupMetricsSnapshot(cfg, startedAt)
+	if snapshot.RunTimestamp != 1700000100 {
+		t.Fatalf("expected previous run timestamp preserved, got %d", snapshot.RunTimestamp)
+	}
+	if snapshot.SuccessTimestamp != 1700000000 {
+		t.Fatalf("expected previous success timestamp preserved, got %d", snapshot.SuccessTimestamp)
+	}
+	if snapshot.RunInProgress != 1 {
+		t.Fatalf("expected in-progress metric 1, got %d", snapshot.RunInProgress)
+	}
+	if snapshot.CurrentRunStartTimestamp != startedAt.UTC().Unix() {
+		t.Fatalf("expected current start timestamp %d, got %d", startedAt.UTC().Unix(), snapshot.CurrentRunStartTimestamp)
+	}
+	if snapshot.CurrentRunDurationSeconds < 9 || snapshot.CurrentRunDurationSeconds > 11 {
+		t.Fatalf("expected current duration near 10s, got %.3f", snapshot.CurrentRunDurationSeconds)
 	}
 }
