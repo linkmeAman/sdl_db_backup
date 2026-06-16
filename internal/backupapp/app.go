@@ -35,6 +35,7 @@ type Config = config
 type config struct {
 	DBUser                  string
 	DBPass                  string
+	DBEngine                string
 	DBHost                  string
 	DBPort                  string
 	BackupDir               string
@@ -47,11 +48,14 @@ type config struct {
 	MySQLBin                string
 	MySQLDumpBin            string
 	RetryCount              int
-	RetentionDays           int
+	RetentionDaily          int
+	RetentionWeekly         int
+	RetentionMonthly        int
 	LogicalEnabled          bool
 	LogicalTimeoutPerDB     time.Duration
 	LogicalS3UploadEnabled  bool
 	LogicalSchedule         string
+	EncryptionKey           string
 	LogicalDatabases        []string
 	LogicalTables           map[string][]string
 	PhysicalSchedule        string
@@ -88,6 +92,16 @@ type config struct {
 	APIAuthEnabled          bool
 	APIBearerToken          string
 	ExecutionSource         string
+	PreflightOnly           bool
+	MetricsJob              string
+	MetricsService          string
+	MetricsEnv              string
+	MetricsRegion           string
+	RestoreTestEnabled      bool
+	RestoreTestHost         string
+	RestoreTestPort         string
+	RestoreTestUser         string
+	RestoreTestPass         string
 }
 
 type PhysicalBackupResult = physicalBackupResult
@@ -108,6 +122,7 @@ type databaseResult struct {
 	Duration      string `json:"duration"`
 	OutputPath    string `json:"output_path,omitempty"`
 	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	RowCounts     int64  `json:"row_counts,omitempty"`
 	ErrorCategory string `json:"error_category,omitempty"`
 	Error         string `json:"error,omitempty"`
 }
@@ -158,9 +173,10 @@ const (
 )
 
 type ManualRunOptions struct {
-	Mode       ManualRunMode
-	UploadMode ManualUploadMode
-	ForceNow   bool
+	Mode          ManualRunMode
+	UploadMode    ManualUploadMode
+	ForceNow      bool
+	PreflightOnly bool
 }
 
 type Preview struct {
@@ -241,13 +257,16 @@ type LatestRunInfo struct {
 }
 
 type HealthReport struct {
-	ConfigPath   string
-	RunLogPath   string
-	DailyLogPath string
-	LatestRun    *LatestRunInfo
-	Logical      HealthCheck
-	Physical     HealthCheck
-	Runtime      RuntimeProfile
+	ConfigPath    string
+	RunLogPath    string
+	DailyLogPath  string
+	LatestRun     *LatestRunInfo
+	Logical       HealthCheck
+	Physical      HealthCheck
+	Metrics       HealthCheck
+	Directories   []HealthCheck
+	Observability ObservabilityReport
+	Runtime       RuntimeProfile
 }
 
 type scheduleState struct {
@@ -712,6 +731,7 @@ func loadConfigFromValues(values map[string]string) config {
 	return config{
 		DBUser:                  dbUser,
 		DBPass:                  dbPass,
+		DBEngine:                strings.ToLower(getMapValue(values, "DB_ENGINE", "mysql")),
 		DBHost:                  getMapValue(values, "DB_HOST", "127.0.0.1"),
 		DBPort:                  getMapValue(values, "DB_PORT", "3306"),
 		BackupDir:               backupDir,
@@ -724,7 +744,9 @@ func loadConfigFromValues(values map[string]string) config {
 		MySQLBin:                getMapValue(values, "MYSQL_BIN", "mysql"),
 		MySQLDumpBin:            getMapValue(values, "MYSQLDUMP_BIN", "mysqldump"),
 		RetryCount:              getMapInt(values, "BACKUP_RETRY_COUNT", 3),
-		RetentionDays:           getMapInt(values, "BACKUP_RETENTION_DAYS", 5),
+		RetentionDaily:          getMapInt(values, "BACKUP_RETENTION_DAILY", 7),
+		RetentionWeekly:         getMapInt(values, "BACKUP_RETENTION_WEEKLY", 4),
+		RetentionMonthly:        getMapInt(values, "BACKUP_RETENTION_MONTHLY", 12),
 		LogicalEnabled:          getMapBool(values, "BACKUP_LOGICAL_ENABLED", true),
 		LogicalTimeoutPerDB:     logicalTimeoutPerDB,
 		LogicalS3UploadEnabled:  getMapBool(values, "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", true),
@@ -749,6 +771,7 @@ func loadConfigFromValues(values map[string]string) config {
 		S3Region:                getMapValue(values, "BACKUP_S3_REGION", "ap-south-1"),
 		S3KeyID:                 s3KeyID,
 		S3KeySecret:             s3KeySecret,
+		EncryptionKey:           getMapValue(values, "BACKUP_ENCRYPTION_KEY", ""),
 		XbcloudBin:              getMapValue(values, "BACKUP_XBCLOUD_BIN", "xbcloud"),
 		PhysicalEnabled:         getMapBool(values, "BACKUP_PHYSICAL_ENABLED", true),
 		PhysicalS3UploadEnabled: getMapBool(values, "BACKUP_PHYSICAL_S3_UPLOAD_ENABLED", true),
@@ -765,6 +788,15 @@ func loadConfigFromValues(values map[string]string) config {
 		APIAuthEnabled:          getMapBool(values, "BACKUP_API_AUTH_ENABLED", false),
 		APIBearerToken:          getMapValue(values, "BACKUP_API_BEARER_TOKEN", ""),
 		ExecutionSource:         getMapValue(values, "BACKUP_EXECUTION_SOURCE", "runner"),
+		MetricsJob:              getMapValue(values, "BACKUP_METRICS_JOB", "sdl_db_backup"),
+		MetricsService:          getMapValue(values, "BACKUP_METRICS_SERVICE", "mysql"),
+		MetricsEnv:              getMapValue(values, "BACKUP_METRICS_ENV", ""),
+		MetricsRegion:           getMapValue(values, "BACKUP_METRICS_REGION", ""),
+		RestoreTestEnabled:      strings.ToLower(getMapValue(values, "RESTORE_TEST_ENABLED", "false")) == "true",
+		RestoreTestHost:         getMapValue(values, "RESTORE_TEST_HOST", ""),
+		RestoreTestPort:         getMapValue(values, "RESTORE_TEST_PORT", "3306"),
+		RestoreTestUser:         getMapValue(values, "RESTORE_TEST_USER", "root"),
+		RestoreTestPass:         getMapValue(values, "RESTORE_TEST_PASS", ""),
 	}
 }
 
@@ -920,6 +952,7 @@ func managedEnvKeys() []string {
 	return []string{
 		"DB_USER",
 		"DB_PASS",
+		"DB_ENGINE",
 		"DB_HOST",
 		"DB_PORT",
 		"BACKUP_DIR",
@@ -942,9 +975,12 @@ func managedEnvKeys() []string {
 		"BACKUP_PHYSICAL_SCHEDULE",
 		"BACKUP_PHYSICAL_TIMEOUT",
 		"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED",
+		"BACKUP_ENCRYPTION_KEY",
 		"BACKUP_DISCOVERY_TIMEOUT",
 		"BACKUP_PREFLIGHT_TIMEOUT",
-		"BACKUP_RETENTION_DAYS",
+		"BACKUP_RETENTION_DAILY",
+		"BACKUP_RETENTION_WEEKLY",
+		"BACKUP_RETENTION_MONTHLY",
 		"BACKUP_CLEANUP_FAIL_FATAL",
 		"BACKUP_LOCK_FILE",
 		"BACKUP_S3_UPLOAD_URL",
@@ -971,6 +1007,9 @@ func managedEnvKeys() []string {
 		"BACKUP_API_BASE_PATH",
 		"BACKUP_API_AUTH_ENABLED",
 		"BACKUP_API_BEARER_TOKEN",
+		"BACKUP_METRICS_JOB",
+		"BACKUP_METRICS_SERVICE",
+		"BACKUP_METRICS_ENV",
 	}
 }
 
@@ -978,6 +1017,7 @@ func envMapFromConfig(cfg Config) map[string]string {
 	values := map[string]string{
 		"DB_USER":                           cfg.DBUser,
 		"DB_PASS":                           cfg.DBPass,
+		"DB_ENGINE":                         cfg.DBEngine,
 		"DB_HOST":                           cfg.DBHost,
 		"DB_PORT":                           cfg.DBPort,
 		"BACKUP_DIR":                        cfg.BackupDir,
@@ -1000,9 +1040,12 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_PHYSICAL_SCHEDULE":          cfg.PhysicalSchedule,
 		"BACKUP_PHYSICAL_TIMEOUT":           cfg.PhysicalTimeout.String(),
 		"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED": strconv.FormatBool(cfg.PhysicalS3UploadEnabled),
+		"BACKUP_ENCRYPTION_KEY":             cfg.EncryptionKey,
 		"BACKUP_DISCOVERY_TIMEOUT":          cfg.DiscoveryTimeout.String(),
 		"BACKUP_PREFLIGHT_TIMEOUT":          cfg.PreflightTimeout.String(),
-		"BACKUP_RETENTION_DAYS":             strconv.Itoa(cfg.RetentionDays),
+		"BACKUP_RETENTION_DAILY":            strconv.Itoa(cfg.RetentionDaily),
+		"BACKUP_RETENTION_WEEKLY":           strconv.Itoa(cfg.RetentionWeekly),
+		"BACKUP_RETENTION_MONTHLY":          strconv.Itoa(cfg.RetentionMonthly),
 		"BACKUP_CLEANUP_FAIL_FATAL":         strconv.FormatBool(cfg.CleanupFailFatal),
 		"BACKUP_LOCK_FILE":                  cfg.LockFile,
 		"BACKUP_S3_UPLOAD_URL":              cfg.S3UploadURL,
@@ -1029,6 +1072,15 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_API_BASE_PATH":              cfg.APIBasePath,
 		"BACKUP_API_AUTH_ENABLED":           strconv.FormatBool(cfg.APIAuthEnabled),
 		"BACKUP_API_BEARER_TOKEN":           cfg.APIBearerToken,
+		"BACKUP_METRICS_JOB":                cfg.MetricsJob,
+		"BACKUP_METRICS_SERVICE":            cfg.MetricsService,
+		"BACKUP_METRICS_ENV":                cfg.MetricsEnv,
+		"BACKUP_METRICS_REGION":             cfg.MetricsRegion,
+		"RESTORE_TEST_ENABLED":              fmt.Sprintf("%t", cfg.RestoreTestEnabled),
+		"RESTORE_TEST_HOST":                 cfg.RestoreTestHost,
+		"RESTORE_TEST_PORT":                 cfg.RestoreTestPort,
+		"RESTORE_TEST_USER":                 cfg.RestoreTestUser,
+		"RESTORE_TEST_PASS":                 "***",
 	}
 	return values
 }
@@ -1142,6 +1194,12 @@ func BuildManualRunConfig(base Config, opts ManualRunOptions) (Config, Preview, 
 		}
 	default:
 		return cfg, preview, fmt.Errorf("unsupported upload mode %q", opts.UploadMode)
+	}
+
+	if opts.PreflightOnly {
+		cfg.PreflightOnly = true
+		preview.Lines = append(preview.Lines, "Run type: preflight only")
+		preview.Warnings = append(preview.Warnings, "Preflight-only mode validates MySQL, directory permissions, metrics path, and configured upload prerequisites without creating backup artifacts.")
 	}
 
 	preview.Lines = append(preview.Lines, "Config file will not be rewritten unless you explicitly save from the TUI.")
@@ -1378,6 +1436,91 @@ func checkPhysicalHealth(cfg config) HealthCheck {
 	return check
 }
 
+func pathOwnershipSummary(info os.FileInfo) string {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Sprintf("mode=%#o", info.Mode().Perm())
+	}
+	return fmt.Sprintf("uid=%d gid=%d mode=%#o", stat.Uid, stat.Gid, info.Mode().Perm())
+}
+
+func probeExistingWritableDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	tempFile, err := os.CreateTemp(path, ".sdl-backup-health-*")
+	if err != nil {
+		return err
+	}
+	name := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Remove(name); err != nil {
+		return err
+	}
+	return nil
+}
+
+func checkDirectoryHealth(name, path string) HealthCheck {
+	check := HealthCheck{Name: name}
+	info, err := os.Stat(path)
+	if err != nil {
+		check.Status = "error"
+		check.Message = fmt.Sprintf("%s missing or unreadable: %v", path, err)
+		return check
+	}
+	if !info.IsDir() {
+		check.Status = "error"
+		check.Message = fmt.Sprintf("%s is not a directory (%s)", path, pathOwnershipSummary(info))
+		return check
+	}
+	if err := probeExistingWritableDir(path); err != nil {
+		check.Status = "error"
+		check.Message = fmt.Sprintf("%s is not writable (%s): %v", path, pathOwnershipSummary(info), err)
+		return check
+	}
+	check.Status = "ok"
+	check.Message = fmt.Sprintf("%s writable (%s)", path, pathOwnershipSummary(info))
+	return check
+}
+
+func checkMetricsHealth(cfg config) HealthCheck {
+	path := resolvedMetricsFilePath(cfg.MetricsFile)
+	dir := filepath.Dir(path)
+	check := HealthCheck{Name: "metrics"}
+	info, err := os.Stat(dir)
+	if err != nil {
+		check.Status = "error"
+		check.Message = fmt.Sprintf("metrics directory %s missing or unreadable: %v", dir, err)
+		return check
+	}
+	if !info.IsDir() {
+		check.Status = "error"
+		check.Message = fmt.Sprintf("metrics directory %s is not a directory (%s)", dir, pathOwnershipSummary(info))
+		return check
+	}
+	if err := validateMetricsPathWritable(path); err != nil {
+		check.Status = "error"
+		check.Message = fmt.Sprintf("metrics path %s is not writable (%s): %v", path, pathOwnershipSummary(info), err)
+		return check
+	}
+	fileInfo, err := os.Stat(path)
+	if err == nil {
+		check.Status = "ok"
+		check.Message = fmt.Sprintf("metrics path %s writable; file=%s dir=%s", path, pathOwnershipSummary(fileInfo), pathOwnershipSummary(info))
+		return check
+	}
+	check.Status = "ok"
+	check.Message = fmt.Sprintf("metrics path %s writable; file not created yet; dir=%s", path, pathOwnershipSummary(info))
+	return check
+}
+
 func GetHealthReport(ctx context.Context, envPath string) (HealthReport, error) {
 	cfg, err := loadConfigWithOverrides(envPath)
 	if err != nil {
@@ -1390,6 +1533,13 @@ func GetHealthReport(ctx context.Context, envPath string) (HealthReport, error) 
 		DailyLogPath: filepath.Join(cfg.LogDir, time.Now().Format("2006-01-02")+".log"),
 		Logical:      checkLogicalHealth(cfg),
 		Physical:     checkPhysicalHealth(cfg),
+		Metrics:      checkMetricsHealth(cfg),
+		Directories: []HealthCheck{
+			checkDirectoryHealth("backup_dir", cfg.BackupDir),
+			checkDirectoryHealth("log_dir", cfg.LogDir),
+			checkDirectoryHealth("metrics_dir", filepath.Dir(resolvedMetricsFilePath(cfg.MetricsFile))),
+		},
+		Observability: GetObservabilityReport(cfg),
 	}
 	runtime, runtimeErr := GetRuntimeProfile(envPath)
 	if runtimeErr == nil {
@@ -1553,50 +1703,193 @@ func validatePrerequisites(cfg config, requireLogicalDump bool) error {
 	return nil
 }
 
-func pingMySQL(cfg config) error {
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
-	defer cancel()
-
-	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", "SELECT 1")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(out))
-		category := classifyFailure(err, message)
-		return fmt.Errorf("mysql connectivity check failed (%s): %s", category, chooseFailureMessage(err, message))
+func validateLogicalUploadPrerequisites(cfg config) error {
+	if !cfg.LogicalS3UploadEnabled {
+		return nil
+	}
+	switch cfg.S3UploadMode {
+	case "", "direct":
+		if cfg.S3Bucket == "" {
+			return errors.New("logical backup upload requires BACKUP_S3_BUCKET")
+		}
+		if cfg.S3Region == "" {
+			return errors.New("logical backup upload requires BACKUP_S3_REGION")
+		}
+		if cfg.S3KeyID == "" || cfg.S3KeySecret == "" {
+			return errors.New("logical backup upload requires S3 credentials")
+		}
+	case "php", "cli":
+		if cfg.S3UploadScript == "" {
+			return fmt.Errorf("logical backup upload mode %q requires BACKUP_S3_UPLOAD_SCRIPT", cfg.S3UploadMode)
+		}
+		if _, err := exec.LookPath(cfg.S3PHPBin); err != nil {
+			return fmt.Errorf("php binary %q not found in PATH: %w", cfg.S3PHPBin, err)
+		}
+	case "http":
+		if strings.TrimSpace(cfg.S3UploadURL) == "" {
+			return errors.New("logical backup upload mode http requires BACKUP_S3_UPLOAD_URL")
+		}
+	case "auto":
+		if (cfg.S3KeyID != "" && cfg.S3KeySecret != "" && cfg.S3Bucket != "" && cfg.S3Region != "") || cfg.S3UploadScript != "" || cfg.S3UploadURL != "" {
+			return nil
+		}
+		return errors.New("logical backup upload mode auto requires direct S3 credentials, BACKUP_S3_UPLOAD_SCRIPT, or BACKUP_S3_UPLOAD_URL")
+	default:
+		return fmt.Errorf("unsupported BACKUP_S3_UPLOAD_MODE=%q", cfg.S3UploadMode)
 	}
 	return nil
 }
 
-func cleanupOldBackups(backupDir, currentRun string, retentionDays int) error {
-	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+func runPreflightChecks(cfg config, logicalPlanned bool, physicalPlanned bool) error {
+	checks := []string{
+		"backup directory writable",
+		"log directory writable",
+		"metrics path writable",
+		"MySQL connectivity",
+	}
+	if logicalPlanned && cfg.LogicalS3UploadEnabled {
+		checks = append(checks, "logical upload prerequisites")
+	}
+	if physicalPlanned {
+		checks = append(checks, "physical backup prerequisites")
+	}
+	log.Printf("preflight-only run requested; validating %s", strings.Join(checks, ", "))
+
+	if err := validatePrerequisites(cfg, logicalPlanned); err != nil {
+		return err
+	}
+	if err := validateMetricsPathWritable(cfg.MetricsFile); err != nil {
+		return fmt.Errorf("metrics path preflight failed: %w", err)
+	}
+	if logicalPlanned {
+		if _, err := listDatabases(cfg); err != nil {
+			return err
+		}
+		if err := validateLogicalUploadPrerequisites(cfg); err != nil {
+			return err
+		}
+	}
+	if physicalPlanned {
+		check := checkPhysicalHealth(cfg)
+		if check.Status == "error" {
+			return errors.New(check.Message)
+		}
+	}
+	log.Printf("preflight checks passed")
+	return nil
+}
+
+func pingMySQL(cfg config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	bin := cfg.MySQLBin
+	if cfg.DBEngine == "postgres" {
+		bin = "psql"
+	}
+	cmd := dbCmdContext(ctx, cfg, bin, "-A", "-t", "-c", "SELECT 1")
+	if cfg.DBEngine == "mysql" {
+		cmd = dbCmdContext(ctx, cfg, bin, "-N", "-e", "SELECT 1")
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("database connection failed: %w", err)
+	}
+	return nil
+}
+
+func cleanupOldBackups(backupDir, currentRun string, cfg config) error {
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		return err
 	}
 
+	type backup struct {
+		path string
+		time time.Time
+	}
+
+	var backups []backup
 	currentRun = filepath.Clean(currentRun)
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-
 		runTime, err := time.Parse(runTimestampLayout, entry.Name())
 		if err != nil {
-			// Not a timestamped backup folder (e.g. logs/); skip.
 			continue
 		}
-
 		path := filepath.Clean(filepath.Join(backupDir, entry.Name()))
 		if currentRun != "" && path == currentRun {
 			continue
 		}
-		if runTime.Before(cutoff) {
-			log.Printf("deleting old backup folder: %s", path)
-			if err := os.RemoveAll(path); err != nil {
-				return fmt.Errorf("delete old backup %s: %w", path, err)
+		backups = append(backups, backup{path: path, time: runTime})
+	}
+
+	// Sort backups from newest to oldest
+	for i := 0; i < len(backups)-1; i++ {
+		for j := i + 1; j < len(backups); j++ {
+			if backups[j].time.After(backups[i].time) {
+				backups[i], backups[j] = backups[j], backups[i]
 			}
 		}
 	}
+
+	keep := make(map[string]bool)
+
+	// Keep Daily
+	seenDays := make(map[string]bool)
+	daysKept := 0
+	for _, b := range backups {
+		day := b.time.Format("2006-01-02")
+		if !seenDays[day] {
+			seenDays[day] = true
+			if daysKept < cfg.RetentionDaily {
+				keep[b.path] = true
+				daysKept++
+			}
+		}
+	}
+
+	// Keep Weekly
+	seenWeeks := make(map[string]bool)
+	weeksKept := 0
+	for _, b := range backups {
+		year, week := b.time.ISOWeek()
+		weekStr := fmt.Sprintf("%d-W%02d", year, week)
+		if !seenWeeks[weekStr] {
+			seenWeeks[weekStr] = true
+			if weeksKept < cfg.RetentionWeekly {
+				keep[b.path] = true
+				weeksKept++
+			}
+		}
+	}
+
+	// Keep Monthly
+	seenMonths := make(map[string]bool)
+	monthsKept := 0
+	for _, b := range backups {
+		month := b.time.Format("2006-01")
+		if !seenMonths[month] {
+			seenMonths[month] = true
+			if monthsKept < cfg.RetentionMonthly {
+				keep[b.path] = true
+				monthsKept++
+			}
+		}
+	}
+
+	// Delete unkept
+	for _, b := range backups {
+		if !keep[b.path] {
+			log.Printf("deleting old backup folder: %s", b.path)
+			if err := os.RemoveAll(b.path); err != nil {
+				return fmt.Errorf("delete old backup %s: %w", b.path, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1608,16 +1901,38 @@ func mysqlCmdContext(ctx context.Context, cfg config, bin string, args ...string
 	return cmd
 }
 
+func postgresCmdContext(ctx context.Context, cfg config, bin string, args ...string) *exec.Cmd {
+	// e.g. psql -h host -p port -U user
+	base := []string{"-h", cfg.DBHost, "-p", cfg.DBPort, "-U", cfg.DBUser}
+	all := append(base, args...)
+	cmd := exec.CommandContext(ctx, bin, all...)
+	cmd.Env = append(os.Environ(), "PGPASSWORD="+cfg.DBPass)
+	return cmd
+}
+
+func dbCmdContext(ctx context.Context, cfg config, bin string, args ...string) *exec.Cmd {
+	if cfg.DBEngine == "postgres" {
+		return postgresCmdContext(ctx, cfg, bin, args...)
+	}
+	return mysqlCmdContext(ctx, cfg, bin, args...)
+}
+
 func listDatabases(cfg config) ([]string, error) {
-	log.Printf("discovering databases with %s", cfg.MySQLBin)
+	log.Printf("discovering databases for %s", cfg.DBEngine)
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.DiscoveryTimeout)
 	defer cancel()
 
-	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", "SHOW DATABASES")
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		cmd = dbCmdContext(ctx, cfg, "psql", "-A", "-t", "-c", "SELECT datname FROM pg_database WHERE datistemplate = false")
+	} else {
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", "SHOW DATABASES")
+	}
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(out))
-		return nil, fmt.Errorf("mysql database discovery failed (%s): %s", classifyFailure(err, message), chooseFailureMessage(err, message))
+		return nil, fmt.Errorf("list databases failed (%s): %s", classifyFailure(err, message), chooseFailureMessage(err, message))
 	}
 
 	var databases []string
@@ -1637,7 +1952,14 @@ func listDatabases(cfg config) ([]string, error) {
 
 func filterDatabases(cfg config, discovered []string) []string {
 	if len(cfg.LogicalDatabases) == 0 {
-		return discovered
+		filtered := make([]string, 0, len(discovered))
+		for _, db := range discovered {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(db)), "bk_") {
+				continue
+			}
+			filtered = append(filtered, db)
+		}
+		return filtered
 	}
 	allowed := map[string]bool{}
 	for _, db := range cfg.LogicalDatabases {
@@ -1739,12 +2061,46 @@ func removePartialOutput(path string) {
 	}
 }
 
+func getDatabaseRowCount(cfg config, dbName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		query := "SELECT COALESCE(sum(reltuples::bigint), 0) FROM pg_class WHERE relkind='r' AND relnamespace=(SELECT oid FROM pg_namespace WHERE nspname='public')"
+		cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+	} else {
+		query := fmt.Sprintf("SELECT COALESCE(SUM(TABLE_ROWS), 0) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE'", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return 0, fmt.Errorf("row count query failed: %s", chooseFailureMessage(err, message))
+	}
+
+	valStr := strings.TrimSpace(string(out))
+	if valStr == "NULL" || valStr == "" {
+		return 0, nil
+	}
+	count, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid row count %q: %v", valStr, err)
+	}
+	return count, nil
+}
+
 func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
+	if cfg.DBEngine == "postgres" {
+		// PostgreSQL handles views safely in pg_dump, skipping broken view check
+		return nil, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
 	defer cancel()
 
 	query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA=%q ORDER BY TABLE_NAME", dbName)
-	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	cmd := dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(out))
@@ -1760,19 +2116,21 @@ func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
 		}
 
 		vCtx, vCancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
-		check := mysqlCmdContext(vCtx, cfg, cfg.MySQLBin, "-D", dbName, "-N", "-e", fmt.Sprintf("SHOW FIELDS FROM `%s`", viewName))
+		check := dbCmdContext(vCtx, cfg, cfg.MySQLBin, "-D", dbName, "-N", "-e", fmt.Sprintf("SHOW FIELDS FROM `%s`", viewName))
 		checkOut, checkErr := check.CombinedOutput()
 		vCancel()
-		if checkErr == nil {
-			continue
+
+		if checkErr != nil {
+			msg := strings.TrimSpace(string(checkOut))
+			category := classifyFailure(checkErr, msg)
+			if category == "" {
+				category = "view"
+			}
+			if strings.Contains(msg, "View") && strings.Contains(msg, "references invalid table(s)") {
+				broken = append(broken, viewName)
+			}
+			log.Printf("warning: skipping view database=%s view=%s category=%s error=%s", dbName, viewName, category, chooseFailureMessage(checkErr, msg))
 		}
-		message := strings.TrimSpace(string(checkOut))
-		category := classifyFailure(checkErr, message)
-		if category == "" {
-			category = "view"
-		}
-		broken = append(broken, viewName)
-		log.Printf("warning: skipping view database=%s view=%s category=%s error=%s", dbName, viewName, category, chooseFailureMessage(checkErr, message))
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -1819,6 +2177,21 @@ func buildMySQLDumpArgs(dbName string, tables []string, ignoreTables []string) [
 	return args
 }
 
+func buildPostgresDumpArgs(dbName string, tables []string, ignoreTables []string) []string {
+	args := []string{
+		"-d", dbName,
+		"--clean",
+		"--if-exists",
+	}
+	for _, table := range tables {
+		args = append(args, "-t", table)
+	}
+	for _, table := range ignoreTables {
+		args = append(args, "-T", table)
+	}
+	return args
+}
+
 func logLogicalTableSummary(dbName string, tables []string) {
 	if len(tables) == 0 {
 		return
@@ -1849,11 +2222,27 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		}
 	}
 
-	counter := &countingWriter{writer: file}
+	var baseWriter io.Writer = file
+	if cfg.EncryptionKey != "" {
+		encWriter, encErr := EncryptWriter(file, cfg.EncryptionKey)
+		if encErr != nil {
+			closeFile()
+			return 0, fmt.Errorf("setup encryption: %w", encErr)
+		}
+		baseWriter = encWriter
+	}
+
+	counter := &countingWriter{writer: baseWriter}
 	gz := gzip.NewWriter(counter)
 
-	args := buildMySQLDumpArgs(dbName, tables, ignoreTables)
-	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLDumpBin, args...)
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		args := buildPostgresDumpArgs(dbName, tables, ignoreTables)
+		cmd = dbCmdContext(ctx, cfg, "pg_dump", args...)
+	} else {
+		args := buildMySQLDumpArgs(dbName, tables, ignoreTables)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLDumpBin, args...)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		closeFile()
@@ -1950,6 +2339,14 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 
 	for attempt := 1; attempt <= cfg.RetryCount; attempt++ {
 		result.Attempts = attempt
+		if attempt == 1 {
+			if count, err := getDatabaseRowCount(cfg, dbName); err == nil {
+				result.RowCounts = count
+			} else {
+				log.Printf("warning: could not fetch row count for database=%s: %v", dbName, err)
+			}
+		}
+		
 		sizeBytes, err := dumpDatabase(cfg, dbName, outFile, tables, brokenViews)
 		if err == nil {
 			result.Status = "success"
@@ -2863,6 +3260,8 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	logicalUploadSucceeded := false
 	physicalUploadRequired := false
 	physicalUploadSucceeded := false
+	logicalDue := false
+	physicalDue := false
 	var logCloser io.Closer
 	stopRealtimeMetrics := func() {}
 	record.OSUser = currentOSUser()
@@ -2888,7 +3287,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		}
 		stopRealtimeMetrics()
 		if uploadRequired || record.Status != "" {
-			emitFinalBackupMetrics(cfg, record, startedAt, uploadRequired, uploadSucceeded)
+			emitFinalBackupMetrics(cfg, record, startedAt, logicalDue, physicalDue, uploadRequired, uploadSucceeded)
 		}
 		if logCloser != nil {
 			if err := logCloser.Close(); err != nil {
@@ -2924,7 +3323,11 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		cfg.BackupDir,
 		cfg.LogDir,
 	)
-	stopRealtimeMetrics = startRealtimeBackupMetricsEmitter(cfg, startedAt)
+	if err := validateMetricsPathWritable(cfg.MetricsFile); err != nil {
+		log.Printf("metrics preflight warning path=%s err=%v", resolvedMetricsFilePath(cfg.MetricsFile), err)
+	} else {
+		stopRealtimeMetrics = startRealtimeBackupMetricsEmitter(cfg, startedAt)
+	}
 
 	if shouldBlockScheduledRootRun(record.OSUser, record.ExecutionSource) {
 		record.FailureReason = "scheduled backup blocked for root user; use the user-level developer timer/service"
@@ -2943,8 +3346,6 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 
 	statePath := filepath.Join(cfg.LogDir, "backup-schedule-state.json")
 	state := loadScheduleState(statePath)
-	logicalDue := false
-	physicalDue := false
 	logicalLastSuccess := parseScheduleTimestamp(state.LogicalLastSuccess)
 	physicalLastSuccess := parseScheduleTimestamp(state.PhysicalLastSuccess)
 
@@ -2985,14 +3386,31 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	}
 
 	if !logicalDue && !physicalDue {
-		record.Status = "success"
-		log.Printf("no backup tasks are due for this run")
+		if !cfg.PreflightOnly {
+			record.Status = "success"
+			log.Printf("no backup tasks are due for this run")
+			record.ExitCode = finalizeRun(cfg, &record, startedAt)
+			return record, nil
+		}
+		log.Printf("no backup tasks are due for this run; continuing with preflight-only validation")
+	}
+
+	logicalPlanned := logicalDue || (cfg.PreflightOnly && cfg.LogicalEnabled)
+	physicalPlanned := physicalDue || (cfg.PreflightOnly && cfg.PhysicalEnabled && cfg.PhysicalS3UploadEnabled)
+
+	if err := validatePrerequisites(cfg, logicalPlanned); err != nil {
+		record.FailureReason = err.Error()
 		record.ExitCode = finalizeRun(cfg, &record, startedAt)
 		return record, nil
 	}
-
-	if err := validatePrerequisites(cfg, logicalDue); err != nil {
-		record.FailureReason = err.Error()
+	if cfg.PreflightOnly {
+		if err := runPreflightChecks(cfg, logicalPlanned, physicalPlanned); err != nil {
+			record.FailureReason = "preflight failed: " + err.Error()
+			record.Status = "failed"
+			record.ExitCode = finalizeRun(cfg, &record, startedAt)
+			return record, nil
+		}
+		record.Status = "success"
 		record.ExitCode = finalizeRun(cfg, &record, startedAt)
 		return record, nil
 	}
@@ -3018,6 +3436,9 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 			return record, nil
 		}
 		databases := filterDatabases(cfg, discoveredDatabases)
+		if len(cfg.LogicalDatabases) == 0 && len(databases) != len(discoveredDatabases) {
+			log.Printf("logical backup: excluded %d backup-prefixed database(s) matching bk_* from automatic discovery", len(discoveredDatabases)-len(databases))
+		}
 		if len(cfg.LogicalDatabases) > 0 {
 			log.Printf("logical backup: selected databases=%s matched=%s", strings.Join(cfg.LogicalDatabases, ", "), strings.Join(databases, ", "))
 		}
@@ -3030,7 +3451,11 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		} else {
 			log.Printf("found %d databases: %s", len(databases), strings.Join(databases, ", "))
 			for index, dbName := range databases {
-				outputPath := filepath.Join(runFolder, dbName+".sql.gz")
+				ext := ".sql.gz"
+				if cfg.EncryptionKey != "" {
+					ext = ".sql.gz.enc"
+				}
+				outputPath := filepath.Join(runFolder, dbName+ext)
 				log.Printf("[%d/%d] processing %s", index+1, len(databases), dbName)
 				requestedTables := selectedTablesForDatabase(cfg, dbName)
 				tables := requestedTables
@@ -3090,7 +3515,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		}
 	}
 
-	cleanupErr := cleanupOldBackups(cfg.BackupDir, runFolder, cfg.RetentionDays)
+	cleanupErr := cleanupOldBackups(cfg.BackupDir, runFolder, cfg)
 	if cleanupErr != nil {
 		record.CleanupError = cleanupErr.Error()
 		if cfg.CleanupFailFatal {

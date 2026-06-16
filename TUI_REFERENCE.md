@@ -484,13 +484,14 @@ Field groups:
 - Physical: `BACKUP_PHYSICAL_ENABLED`, `BACKUP_PHYSICAL_SCHEDULE`, `BACKUP_PHYSICAL_TIMEOUT`, `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`, xtrabackup/xbcloud settings
 - S3: `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION`, `BACKUP_S3_LOGICAL_PREFIX`, `BACKUP_S3_PHYSICAL_PREFIX`, `BACKUP_S3_KEY_ID`, `BACKUP_S3_KEY_SECRET`
 - Upload: `BACKUP_S3_UPLOAD_MODE`, `BACKUP_S3_UPLOAD_URL`, `BACKUP_S3_UPLOAD_TIMEOUT`, `BACKUP_S3_PHP_BIN`, `BACKUP_S3_UPLOAD_SCRIPT`
-- Tuning: retry, discovery, preflight, retention, cleanup settings
+- Tuning: retry, discovery, preflight, retention (daily/weekly/monthly), cleanup settings
 
 Secret fields:
 - `DB_PASS`
 - `BACKUP_XTRABACKUP_PASS`
 - `BACKUP_S3_KEY_ID`
 - `BACKUP_S3_KEY_SECRET`
+- `BACKUP_ENCRYPTION_KEY`
 
 ## Logs Page
 

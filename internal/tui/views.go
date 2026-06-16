@@ -17,12 +17,14 @@ func (m *model) resizeViewports() {
 
 func (m *model) resizeViewportsFor(panelHeight int) {
 	contentOuterWidth := clampNonNegative(m.width - m.sidebarWidth())
-	contentInnerWidth := clampNonNegative(contentOuterWidth - 6)
+	contentInnerWidth := clampNonNegative(contentOuterWidth - 4)
 	contentInnerHeight := clampNonNegative(panelHeight - 2)
 	m.dashboardView.Width = contentInnerWidth
 	m.dashboardView.Height = contentInnerHeight
 	m.healthView.Width = contentInnerWidth
 	m.healthView.Height = contentInnerHeight
+	m.observabilityView.Width = contentInnerWidth
+	m.observabilityView.Height = contentInnerHeight
 	m.systemdView.Width = contentInnerWidth
 	m.systemdView.Height = contentInnerHeight
 	m.runLogView.Width = contentInnerWidth
@@ -34,7 +36,7 @@ func (m *model) resizeViewportsFor(panelHeight int) {
 }
 
 func (m model) sidebarWidth() int {
-	return 26
+	return 28
 }
 
 func (m model) View() string {
@@ -58,16 +60,20 @@ func (m model) View() string {
 	if m.confirmMessage != "" {
 		confirmView = m.viewConfirm()
 	}
-	reservedHeight := lipgloss.Height(status) + lipgloss.Height(toastView) + lipgloss.Height(commandView) + lipgloss.Height(helpView) + lipgloss.Height(confirmView)
+	reservedHeight := lipgloss.Height(status) + lipgloss.Height(commandView) + lipgloss.Height(helpView) + lipgloss.Height(confirmView)
 	mainHeight := clampNonNegative(m.height - reservedHeight)
-	m.resizeViewportsFor(mainHeight)
+	
+	viewportAvailableHeight := mainHeight
+	if toastView != "" {
+		viewportAvailableHeight = clampNonNegative(mainHeight - lipgloss.Height(toastView))
+	}
+	
+	m.resizeViewportsFor(viewportAvailableHeight)
 	sidebar := m.viewSidebar(mainHeight)
-	content := m.viewContent(mainHeight)
+	content := m.viewContent(mainHeight, toastView)
+	
 	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 	view := lipgloss.JoinVertical(lipgloss.Left, main, status)
-	if toastView != "" {
-		view = lipgloss.JoinVertical(lipgloss.Left, view, toastView)
-	}
 	if commandView != "" {
 		view = lipgloss.JoinVertical(lipgloss.Left, view, commandView)
 	}
@@ -82,9 +88,6 @@ func (m model) View() string {
 
 func (m model) mainPanelHeight() int {
 	reservedHeight := 1
-	if len(m.toasts) > 0 {
-		reservedHeight += lipgloss.Height(m.viewToastPopup())
-	}
 	if m.commandOpen {
 		reservedHeight += lipgloss.Height(m.viewCommandPalette())
 	}
@@ -101,10 +104,10 @@ func (m model) viewSidebar(height int) string {
 	w := m.sidebarWidth()
 	lines := []string{title.Render("SDL DB Backup"), ""}
 	for i, s := range screens {
-		label := fmt.Sprintf("[%s] %s", s.key, s.name)
+		label := fmt.Sprintf(" %s  %s", s.key, s.name)
 		if i == m.sidebarSelected {
 			if m.focus == focusSidebar && !m.modalActive() {
-				lines = append(lines, selected.Width(clampNonNegative(w-4)).Render(label))
+				lines = append(lines, selected.Width(clampNonNegative(w-5)).Render(label))
 			} else {
 				lines = append(lines, selectedDim.Render(label))
 			}
@@ -120,35 +123,55 @@ func (m model) viewSidebar(height int) string {
 	if m.focus == focusSidebar && !m.modalActive() {
 		pane = sidebarPanelActive
 	}
-	return pane.Width(w).Height(clampNonNegative(height - 2)).Render(strings.Join(lines, "\n"))
+	return pane.Width(clampNonNegative(w - 2)).Height(clampNonNegative(height - 2)).Render(strings.Join(lines, "\n"))
 }
 
-func (m model) viewContent(height int) string {
-	width := clampNonNegative(m.width - m.sidebarWidth() - 6)
-	var body string
+func (m model) viewContent(height int, toastView string) string {
+	outerWidth := clampNonNegative(m.width - m.sidebarWidth())
+	innerWidth := clampNonNegative(outerWidth - 4)
+	body := ""
 	switch m.activeScreen {
 	case screenDashboard:
-		body = m.viewDashboard(width)
+		body = m.viewDashboard(innerWidth)
 	case screenBackup:
-		body = m.viewBackup(width)
+		body = m.viewBackup(innerWidth)
 	case screenSchedule:
-		body = m.viewSchedule(width)
+		body = m.viewSchedule(innerWidth)
 	case screenConfig:
-		body = m.viewConfig(width)
+		body = m.viewConfig(innerWidth)
 	case screenLogs:
-		body = m.viewLogs(width)
+		body = m.viewLogs(innerWidth)
 	case screenHistory:
-		body = m.viewHistory(width)
+		body = m.viewHistory(innerWidth)
 	case screenHealth:
-		body = m.viewHealth(width)
+		body = m.viewHealth(innerWidth)
+	case screenObservability:
+		body = m.viewObservability(innerWidth)
 	case screenSystemd:
-		body = m.viewSystemd(width)
+		body = m.viewSystemd(innerWidth)
 	}
+	
+	targetInnerHeight := clampNonNegative(height - 2)
+	
+	if toastView != "" {
+		targetBodyHeight := clampNonNegative(targetInnerHeight - lipgloss.Height(toastView))
+		body = lipgloss.NewStyle().
+			Width(innerWidth).MaxWidth(innerWidth).
+			Height(targetBodyHeight).MaxHeight(targetBodyHeight).
+			Render(body)
+		body = lipgloss.JoinVertical(lipgloss.Right, body, toastView)
+	} else {
+		body = lipgloss.NewStyle().
+			Width(innerWidth).MaxWidth(innerWidth).
+			Height(targetInnerHeight).MaxHeight(targetInnerHeight).
+			Render(body)
+	}
+	
 	pane := contentPanel
 	if m.focus == focusContent && !m.modalActive() {
 		pane = contentPanelActive
 	}
-	return pane.Width(clampNonNegative(m.width - m.sidebarWidth())).Height(clampNonNegative(height - 2)).Render(body)
+	return pane.Render(body)
 }
 
 func (m model) modalActive() bool {
@@ -177,6 +200,7 @@ func (m model) viewDashboard(width int) string {
 			card("Latest Run", latest, width),
 			card("Logical", healthLine(m.health.Logical), width),
 			card("Physical", healthLine(m.health.Physical), width),
+			card("Metrics", healthLine(m.health.Metrics), width),
 			card("Runtime", fmt.Sprintf("user=%s source=%s", m.health.Runtime.CurrentUser, m.health.Runtime.ExecutionSource), width),
 			card("API", fmt.Sprintf("enabled=%t auth=%t addr=%s", m.cfg.APIEnabled, m.cfg.APIAuthEnabled, m.cfg.APIListenAddr), width),
 			card("Logs", "daily: "+m.health.DailyLogPath, width),
@@ -192,8 +216,10 @@ func (m model) viewDashboard(width int) string {
 		"4      Search and edit config",
 		"5      View logs",
 		"7      Refresh health diagnostics",
+		"8      Inspect observability metrics",
 		":      Command palette",
 	)
+	lines = append(lines, "", muted.Render("Monitoring guide: GRAFANA_BACKUP_MONITORING.md"))
 	m.dashboardView.SetContent(strings.Join(lines, "\n"))
 	return m.dashboardView.View()
 }
@@ -215,7 +241,12 @@ func (m model) viewBackup(width int) string {
 		lines = append(lines, m.viewScopeSelector(width)...)
 	case stepPreview:
 		force := "Force Run Now: " + strconv.FormatBool(m.manualForce)
-		lines = append(lines, optionList([]string{force, "Start backup"}, m.manualSelected)...)
+		preflight := "Preflight Only: " + strconv.FormatBool(m.manualPreflight)
+		actionLabel := "Start backup"
+		if m.manualPreflight {
+			actionLabel = "Start preflight"
+		}
+		lines = append(lines, optionList([]string{force, preflight, actionLabel}, m.manualSelected)...)
 		lines = append(lines, "", title.Render("Preview"))
 		lines = append(lines, m.runPreview.Lines...)
 		if len(m.runPreview.Warnings) > 0 {
@@ -225,21 +256,34 @@ func (m model) viewBackup(width int) string {
 			}
 		}
 	case stepRunning:
-		lines = append(lines, m.spinner.View()+" running backup", m.runProgress.summary(), m.progress.ViewAs(m.runProgress.percent()), "")
+		runningLabel := "running backup"
+		if m.runConfig.PreflightOnly {
+			runningLabel = "running preflight"
+		}
+		lines = append(lines, m.spinner.View()+" "+runningLabel, m.runProgress.summary(), m.progress.ViewAs(m.runProgress.percent()), "")
 		lines = append(lines, m.runLogView.View())
 	case stepDone:
 		if m.runErr != "" {
 			lines = append(lines, bad.Render("Backup failed: ")+m.runErr)
 		} else if m.runResult != nil {
+			runKind := statusStyled(m.runResult.Status)
+			if m.runConfig.PreflightOnly {
+				runKind = title.Render("Preflight Result") + "\n" + statusStyled(m.runResult.Status)
+			}
 			lines = append(lines,
-				statusStyled(m.runResult.Status),
+				runKind,
 				"Run ID: "+m.runResult.RunID,
 				"Run Folder: "+m.runResult.RunFolder,
 				"Log File: "+m.runResult.LogFile,
 				fmt.Sprintf("Databases: %d/%d succeeded", m.runResult.DatabasesSucceeded, m.runResult.DatabasesTotal),
-				"",
-				"Press enter to start another manual workflow.",
 			)
+			if m.runResult.FailureReason != "" {
+				lines = append(lines, "Failure: "+m.runResult.FailureReason)
+			}
+			if m.runResult.CleanupError != "" {
+				lines = append(lines, "Cleanup: "+m.runResult.CleanupError)
+			}
+			lines = append(lines, "", "Press enter to start another manual workflow.")
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -415,6 +459,7 @@ func (m model) configContentLines(visible []int) ([]string, int) {
 	lines := []string{}
 	selectedLine := 0
 	lastGroup := ""
+	dataRow := 0
 	for row, idx := range visible {
 		field := m.fields[idx]
 		if field.Group != lastGroup {
@@ -423,6 +468,7 @@ func (m model) configContentLines(visible []int) ([]string, int) {
 			}
 			lines = append(lines, title.Render(field.Group))
 			lastGroup = field.Group
+			dataRow = 0
 		}
 		value := field.Value
 		if field.Secret && !m.revealSecrets {
@@ -431,15 +477,25 @@ func (m model) configContentLines(visible []int) ([]string, int) {
 		if m.editorActive && m.editorIndex == idx {
 			value = m.editorInput.View()
 		}
-		line := fmt.Sprintf("%-34s %s", field.Key, value)
+		line := fmt.Sprintf(" %-34s │ %s", field.Key, value)
 		if field.Error != "" {
 			line += "  " + bad.Render(field.Error)
 		}
+		
+		// Determine full width for row styling
+		width := clampNonNegative(m.width - m.sidebarWidth() - 6)
+		if lipgloss.Width(line) < width {
+			line += strings.Repeat(" ", width-lipgloss.Width(line))
+		}
+
 		if row == m.configSelected {
 			selectedLine = len(lines)
-			line = selected.Render(line)
+			line = rowSelected.Render(line)
+		} else if dataRow%2 == 1 {
+			line = rowAlt.Render(line)
 		}
 		lines = append(lines, line)
+		dataRow++
 	}
 	return lines, selectedLine
 }
@@ -514,7 +570,7 @@ func (m model) viewLogs(width int) string {
 }
 
 func (m model) viewHistory(width int) string {
-	lines := []string{title.Render("Run History"), muted.Render("r refresh"), ""}
+	lines := []string{title.Render("Run History"), muted.Render("j/k up/down   v validate logical   t test sandbox restore   r refresh"), ""}
 	if m.historyErr != "" {
 		lines = append(lines, bad.Render(m.historyErr))
 		return strings.Join(lines, "\n")
@@ -532,7 +588,9 @@ func (m model) viewHistory(width int) string {
 			run.Duration,
 			run.RunID,
 		)
-		if row%2 == 1 {
+		if i == m.historySelected {
+			line = selected.Width(clampNonNegative(width - 4)).Render(line)
+		} else if row%2 == 1 {
 			line = rowAlt.Width(clampNonNegative(width - 4)).Render(line)
 		}
 		lines = append(lines, line)
@@ -545,7 +603,7 @@ func (m model) viewHistory(width int) string {
 }
 
 func (m model) viewHealth(width int) string {
-	lines := []string{sectionTitle.Render("Health Diagnostics"), muted.Render("r refresh"), muted.Render("Shows effective runtime values, including temporary overrides."), ""}
+	lines := []string{sectionTitle.Render("Health Diagnostics"), muted.Render("r refresh"), muted.Render("Shows effective runtime values, including temporary overrides."), muted.Render("Grafana guide: GRAFANA_BACKUP_MONITORING.md"), ""}
 	if m.healthErr != "" {
 		lines = append(lines, bad.Render(m.healthErr))
 		m.healthView.SetContent(strings.Join(lines, "\n"))
@@ -568,8 +626,16 @@ func (m model) viewHealth(width int) string {
 		"",
 		"Logical:  "+healthLine(m.health.Logical),
 		"Physical: "+healthLine(m.health.Physical),
+		"Metrics:  "+healthLine(m.health.Metrics),
 		"",
 	)
+	if len(m.health.Directories) > 0 {
+		lines = append(lines, sectionTitle.Render("Directories"))
+		for _, check := range m.health.Directories {
+			lines = append(lines, strings.ReplaceAll(check.Name, "_", " ")+": "+healthLine(check))
+		}
+		lines = append(lines, "")
+	}
 	if m.health.Runtime.PotentialConflictReason != "" {
 		lines = append(lines, warn.Render("Scheduler warning: ")+m.health.Runtime.PotentialConflictReason, "")
 	}
@@ -596,8 +662,111 @@ func (m model) viewHealth(width int) string {
 	return m.healthView.View()
 }
 
+func (m model) viewObservability(width int) string {
+	_ = width
+	lines := []string{sectionTitle.Render("Observability"), muted.Render("r refresh"), muted.Render("Shows metrics collector state and parsed .prom values."), ""}
+	if m.healthErr != "" {
+		lines = append(lines, bad.Render(m.healthErr))
+		m.observabilityView.SetContent(strings.Join(lines, "\n"))
+		return m.observabilityView.View()
+	}
+	if !m.healthLoaded {
+		lines = append(lines, m.spinner.View()+" loading observability...")
+		m.observabilityView.SetContent(strings.Join(lines, "\n"))
+		return m.observabilityView.View()
+	}
+	obs := m.health.Observability
+	lines = append(lines,
+		"Metrics Path: "+obs.MetricsPath,
+		fmt.Sprintf("Path Writable: %t", obs.MetricsWritable),
+		"Path Status: "+emptyDefault(obs.MetricsStatus, "unknown"),
+		fmt.Sprintf("File Exists: %t", obs.MetricsFileExists),
+	)
+	if obs.MetricsFileExists {
+		lines = append(lines,
+			fmt.Sprintf("File Size: %d bytes", obs.MetricsFileSize),
+			"File Mode: "+obs.MetricsFileMode,
+			"File Modified: "+obs.MetricsFileTime.Format(time.RFC3339),
+		)
+	}
+	lines = append(lines, "Last Metrics Write Result: "+emptyDefault(obs.LastWriteResult, "unknown"))
+	if !obs.LastUpdateTime.IsZero() {
+		lines = append(lines, "Last Metrics Update Time: "+obs.LastUpdateTime.Format(time.RFC3339))
+	}
+	// Show the active Prometheus label set so operators can verify the configuration.
+	job := m.cfg.MetricsJob
+	if job == "" {
+		job = "sdl_db_backup"
+	}
+	service := m.cfg.MetricsService
+	if service == "" {
+		service = "mysql"
+	}
+	activeLabels := fmt.Sprintf(`job="%s",service="%s"`, job, service)
+	if env := strings.TrimSpace(m.cfg.MetricsEnv); env != "" {
+		activeLabels += fmt.Sprintf(`,env="%s"`, env)
+	}
+	lines = append(lines, "Prometheus Labels: {"+activeLabels+"}")
+	lines = append(lines, "", sectionTitle.Render("Parsed Metrics"))
+	metricOrder := []string{
+		"backup_last_status",
+		"backup_upload_success",
+		"backup_metrics_write_success",
+		"backup_cleanup_success",
+		"backup_last_cleanup_timestamp",
+		"backup_logical_last_status",
+		"backup_logical_last_total_databases",
+		"backup_logical_last_succeeded_databases",
+		"backup_logical_last_failed_databases",
+		"backup_physical_last_status",
+		"backup_physical_last_duration_seconds",
+		"backup_run_in_progress",
+		"backup_last_run_timestamp",
+		"backup_last_success_timestamp",
+		"backup_last_duration_seconds",
+		"backup_last_size_bytes",
+		"backup_metrics_last_update_timestamp",
+	}
+	for _, key := range metricOrder {
+		lines = append(lines, fmt.Sprintf("%s = %s", key, emptyDefault(obs.Snapshot[key], "0")))
+	}
+	m.observabilityView.SetContent(strings.Join(lines, "\n"))
+	return m.observabilityView.View()
+}
+
 func (m model) viewSystemd(width int) string {
 	lines := []string{sectionTitle.Render("Systemd"), muted.Render("enter action   r refresh   selected action explains command and effect"), ""}
+
+	// ── Invocation Context ────────────────────────────────────────────────
+	lines = append(lines, sectionTitle.Render("Invocation Context"))
+	if m.healthLoaded {
+		rt := m.health.Runtime
+		userTag := good.Render("user-level")
+		sysctlMode := "systemctl --user ..."
+		if !rt.NonRoot {
+			userTag = bad.Render("ROOT ⚠")
+			sysctlMode = "systemctl (system-level) — scheduled runs as root are NOT supported"
+		}
+		lines = append(lines,
+			fmt.Sprintf("Running as:      %s (%s)", rt.CurrentUser, userTag),
+			fmt.Sprintf("systemctl mode:  %s", sysctlMode),
+			fmt.Sprintf("Execution source: %s", rt.ExecutionSource),
+		)
+		if !rt.NonRoot {
+			lines = append(lines,
+				"",
+				bad.Render("⚠  Scheduled backups must run as a non-root user via a user-level systemd"),
+				bad.Render("   timer. Running as root causes ownership drift in backup/log/metrics dirs."),
+			)
+		}
+	} else if m.healthErr != "" {
+		lines = append(lines, bad.Render("could not determine invocation context: "+m.healthErr))
+	} else {
+		lines = append(lines, muted.Render("loading context..."))
+	}
+	lines = append(lines, "")
+
+	// ── Unit Status ───────────────────────────────────────────────────────
 	if m.systemdErr != "" {
 		lines = append(lines, bad.Render(m.systemdErr), "")
 	}
@@ -613,6 +782,7 @@ func (m model) viewSystemd(width int) string {
 		sectionTitle.Render("Portable Guidance"),
 		"Use a user-level systemd timer/service for scheduled runs.",
 		"Do not schedule both the Go runner and the shell script.",
+		"Grafana guide: GRAFANA_BACKUP_MONITORING.md",
 		"",
 		sectionTitle.Render("Actions"),
 	)
@@ -706,6 +876,8 @@ func (m model) contextKeyHints() []string {
 		return []string{keyHint.Render("[j/k]") + " Scroll", keyHint.Render("[PgUp/PgDn]") + " Page", keyHint.Render("[?]") + " Help", keyHint.Render("[Tab]") + " Focus"}
 	case screenHealth:
 		return []string{keyHint.Render("[j/k]") + " Scroll", keyHint.Render("[PgUp/PgDn]") + " Page", keyHint.Render("[r]") + " Refresh", keyHint.Render("[?]") + " Help"}
+	case screenObservability:
+		return []string{keyHint.Render("[j/k]") + " Scroll", keyHint.Render("[PgUp/PgDn]") + " Page", keyHint.Render("[r]") + " Refresh", keyHint.Render("[?]") + " Help"}
 	case screenConfig:
 		return []string{keyHint.Render("[/]") + " Search", keyHint.Render("[Enter]") + " Edit", keyHint.Render("[Ctrl+S]") + " Save", keyHint.Render("[v]") + " Reveal"}
 	case screenLogs:
@@ -738,11 +910,11 @@ func (m model) viewToastPopup() string {
 		return ""
 	}
 	start := max(0, len(m.toasts)-3)
-	lines := []string{sectionTitle.Render("Notifications")}
+	lines := []string{}
 	for _, toast := range m.toasts[start:] {
 		lines = append(lines, m.viewToastLine(toast))
 	}
-	return panel.Width(max(40, m.width-4)).Render(strings.Join(lines, "\n"))
+	return floatingPanel.Render(strings.Join(lines, "\n"))
 }
 
 func (m model) viewToastLine(toast toast) string {
@@ -765,7 +937,7 @@ func (m model) viewCommandPalette() string {
 	for i, command := range commands {
 		line := command.label
 		if i == m.commandIndex {
-			line = selected.Render(line)
+			line = rowSelected.Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -790,7 +962,7 @@ func (m model) viewConfirm() string {
 func (m model) viewHelpModal() string {
 	rows := []string{
 		fmt.Sprintf("%-18s %s", "Key", "Action"),
-		fmt.Sprintf("%-18s %s", "1-8", "Jump to a page"),
+		fmt.Sprintf("%-18s %s", "1-9", "Jump to a page"),
 		fmt.Sprintf("%-18s %s", "Tab / Shift+Tab", "Move focus forward/back"),
 		fmt.Sprintf("%-18s %s", "j/k or arrows", "Navigate lists"),
 		fmt.Sprintf("%-18s %s", "Enter", "Activate selected item"),
@@ -823,7 +995,9 @@ func (m model) contextHelpHints() []string {
 	case screenDashboard:
 		return []string{"j/k: Scroll dashboard", "PgUp/PgDn: Page dashboard", "Tab: Move focus"}
 	case screenHealth:
-		return []string{"j/k: Scroll health diagnostics", "PgUp/PgDn: Page health diagnostics", "r: Refresh health"}
+		return []string{"j/k: Scroll health diagnostics", "PgUp/PgDn: Page health diagnostics", "r: Refresh health", "Grafana guide: GRAFANA_BACKUP_MONITORING.md"}
+	case screenObservability:
+		return []string{"j/k: Scroll observability", "PgUp/PgDn: Page observability", "r: Refresh metrics state", "Grafana guide: GRAFANA_BACKUP_MONITORING.md"}
 	case screenConfig:
 		return []string{"/: Search settings", "Enter: Edit setting", "Ctrl+S: Save .env", "v: Reveal or mask secrets"}
 	case screenLogs:
@@ -832,9 +1006,9 @@ func (m model) contextHelpHints() []string {
 		return []string{"Enter: Edit selected row", "a: Apply changes", "c: Clear temporary override"}
 	case screenSystemd:
 		if m.focus == focusContent {
-			return []string{"PgUp/PgDn: Scroll systemd text", "j/k: Select action", "Enter: Run selected action", "r: Refresh status"}
+			return []string{"PgUp/PgDn: Scroll systemd text", "j/k: Select action", "Enter: Run selected action", "r: Refresh status", "Grafana guide: GRAFANA_BACKUP_MONITORING.md"}
 		}
-		return []string{"j/k: Select action", "Enter: Confirm action", "r: Refresh status"}
+		return []string{"j/k: Select action", "Enter: Confirm action", "r: Refresh status", "Grafana guide: GRAFANA_BACKUP_MONITORING.md"}
 	default:
 		return []string{"Tab: Move focus", ":: Open command palette", "?: Help", "q: Quit"}
 	}

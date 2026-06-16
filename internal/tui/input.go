@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"sdl/sdl_db_backup/internal/backupapp"
 )
 
 func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
@@ -127,7 +129,7 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 		m.focus = focusSidebar
 		m.notifyAction("focus moved to sidebar")
 		return m, nil
-	case "1", "2", "3", "4", "5", "6", "7", "8":
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		i, _ := strconv.Atoi(key.String())
 		m.setScreen(screenID(i - 1))
 		return m, m.screenRefreshCmd()
@@ -211,6 +213,10 @@ func (m model) handleContentViewportKey(key tea.KeyMsg) (model, tea.Cmd, bool) {
 		if handled := scrollViewportByKey(&m.healthView, key); handled {
 			return m, nil, true
 		}
+	case screenObservability:
+		if handled := scrollViewportByKey(&m.observabilityView, key); handled {
+			return m, nil, true
+		}
 	case screenSystemd:
 		if handled := scrollViewportByKey(&m.systemdView, key); handled {
 			return m, nil, true
@@ -286,12 +292,33 @@ func (m model) handleConfigKey(key tea.KeyMsg) (model, tea.Cmd) {
 	case "v":
 		m.revealSecrets = !m.revealSecrets
 		m.notifyAction("secret reveal set to " + strconv.FormatBool(m.revealSecrets))
+	case "ctrl+s":
+		m.notifyAction("applying config changes")
+		return m.applyConfigChanges()
 	case "ctrl+r":
 		m.notifyAction("reloading .env")
 		return m, reloadConfig(m.envPath)
 	}
 	m.syncConfigViewport(visible)
 	return m, nil
+}
+
+func (m model) applyConfigChanges() (model, tea.Cmd) {
+	if !m.dirty {
+		m.pushToast("warning", "no changes to apply")
+		return m, nil
+	}
+	
+	err := backupapp.SaveConfig(m.envPath, m.draft)
+	if err != nil {
+		m.pushToast("error", "failed to save .env: "+err.Error())
+		return m, nil
+	}
+	
+	m.dirty = false
+	m.pushToast("ok", "saved config to .env")
+	// Reload config to ensure everything is synced
+	return m, reloadConfig(m.envPath)
 }
 
 func (m model) handleEditor(key tea.KeyMsg) (model, tea.Cmd) {
@@ -675,9 +702,35 @@ func (m model) handleLogsKey(key tea.KeyMsg) (model, tea.Cmd) {
 }
 
 func (m model) handleHistoryKey(key tea.KeyMsg) (model, tea.Cmd) {
-	if key.String() == "r" {
+	switch key.String() {
+	case "j", "down":
+		m.historySelected++
+		if m.historySelected >= len(m.history) {
+			m.historySelected = len(m.history) - 1
+		}
+	case "k", "up":
+		if m.historySelected > 0 {
+			m.historySelected--
+		}
+	case "r":
 		m.notifyAction("refreshing history")
 		return m, loadHistory(m.cfg.RunLogPath)
+	case "t":
+		if len(m.history) > 0 {
+			run := m.history[m.historySelected]
+			if !m.cfg.RestoreTestEnabled {
+				m.pushToast("error", "Restore validation is disabled in config")
+				return m, nil
+			}
+			m.notifyAction("testing sandbox restore for run " + run.RunID + " (this may take a while)")
+			return m, testRestoreRunCmd(m.cfg, run.RunID)
+		}
+	case "v":
+		if len(m.history) > 0 {
+			run := m.history[m.historySelected]
+			m.notifyAction("validating logical backup for run " + run.RunID)
+			return m, validateLogicalRunCmd(m.cfg, run.RunID)
+		}
 	}
 	return m, nil
 }

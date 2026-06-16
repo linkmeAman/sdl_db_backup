@@ -11,15 +11,17 @@ This project is a portable backup application for MySQL with three main operator
 - `cmd/sdl-db-backup-api/main.go` provides the REST API for CRM/backend integration
 
 Core behavior:
+- Supports both `mysql` and `postgres` database engines.
 - Logical backups and physical backups can be enabled, scheduled, timed out, and uploaded independently through `.env`.
-- Logical backups create `.sql.gz` files per database and can upload that run folder to S3 via direct, PHP, or HTTP upload modes.
+- Logical backups create `.sql.gz` files per database (with AES-256-CFB `.enc` encryption if configured) and can upload that run folder to S3 via direct, PHP, or HTTP upload modes.
 - Physical backups stream `xtrabackup` directly to S3 as `physical.xbstream` and do not create a local physical backup directory.
 - Retries each logical database dump up to the configured retry count.
-- Deletes backup folders older than the configured retention period only after the current run completes.
+- Deletes backup folders using a Grandfather-Father-Son (GFS) rotation strategy to keep daily, weekly, and monthly snapshots.
 - Writes both a per-run log (`<run_id>.log`) and a daily aggregate log (`YYYY-MM-DD.log`) in `BACKUP_LOG_DIR`.
 - Records structured run history in `backup-runs.jsonl`.
 
 If you need implementation history or change tracking, see `CHANGES.md`.
+For Prometheus/Grafana monitoring details, see [GRAFANA_BACKUP_MONITORING.md](/var/www/go-workspace/sdl/sdl_db_backup/GRAFANA_BACKUP_MONITORING.md).
 
 ## Files
 
@@ -90,7 +92,9 @@ Logical backup settings:
 - `BACKUP_LOGICAL_TABLES=db1:table_a,table_b;db2:table_c` or empty for all validated tables/views
 - `BACKUP_LOGICAL_TIMEOUT_PER_DB=30m`
 - `BACKUP_LOGICAL_S3_UPLOAD_ENABLED=true|false`
-- `DB_USER` and `DB_PASS` are used for logical backups (`mysql` / `mysqldump`) and should point to a dedicated backup-only MySQL user
+- `DB_ENGINE=mysql|postgres`
+- `DB_USER` and `DB_PASS` are used for logical backups (`mysql` / `mysqldump` or `pg_dump`) and should point to a dedicated backup-only user
+- `BACKUP_ENCRYPTION_KEY=...` (optional 32-byte string to enable AES-256-CFB stream encryption)
 
 Physical backup settings:
 - `BACKUP_PHYSICAL_ENABLED=true|false`
@@ -130,10 +134,13 @@ Notes:
 - Logical backup upload and physical backup upload are separate. Logical upload is controlled by `BACKUP_LOGICAL_S3_UPLOAD_ENABLED`. Physical upload is controlled by `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`.
 - After each run, the runner writes Prometheus textfile metrics to `BACKUP_METRICS_FILE` or `/var/lib/node_exporter/textfile_collector/sdl_db_backup.prom` by default for Node Exporter textfile collection.
 - While a backup is running, the same metrics file is refreshed periodically so Prometheus/Grafana can show live run state via `backup_run_in_progress`, `backup_current_run_start_timestamp`, `backup_current_run_duration_seconds`, and `backup_metrics_last_update_timestamp`.
+- The metrics file also separates logical and physical outcome via `backup_logical_last_attempted`, `backup_logical_last_status`, `backup_physical_last_attempted`, and `backup_physical_last_status` so Grafana can distinguish a logical success from a physical failure.
+- Additional Grafana-facing metrics include `backup_metrics_write_success`, `backup_cleanup_success`, `backup_last_cleanup_timestamp`, `backup_logical_last_total_databases`, `backup_logical_last_succeeded_databases`, `backup_logical_last_failed_databases`, and `backup_physical_last_duration_seconds`.
 - `BACKUP_S3_UPLOAD_MODE=direct` uploads logical backup files from Go directly to S3 using `BACKUP_S3_KEY_ID` and `BACKUP_S3_KEY_SECRET`. `php` uses `BACKUP_S3_UPLOAD_SCRIPT`, `http` uses `BACKUP_S3_UPLOAD_URL`, and `auto` tries direct upload before falling back to PHP/HTTP.
 - The built-in API is disabled by default. Set `BACKUP_API_ENABLED=true` before starting `cmd/sdl-db-backup-api`.
 - API bearer auth is also disabled by default. When `BACKUP_API_AUTH_ENABLED=true`, every request must send `Authorization: Bearer <BACKUP_API_BEARER_TOKEN>`.
 - Logical backup scope is optional. Empty `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES` means the old behavior: back up every granted non-system database, all tables, and all views that pass the validation probe.
+- Automatic logical discovery skips databases matching `bk_*` unless they are explicitly listed in `BACKUP_LOGICAL_DATABASES`.
 - Table scope applies only to logical backups. Physical backup is a full MySQL data-file backup and is not table-selective.
 - Physical backup currently supports direct S3 streaming only. If `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false`, the physical backup is skipped.
 - Physical backup can use a different MySQL user from logical backup. `DB_USER` is for logical dumps, while `BACKUP_XTRABACKUP_USER` is for xtrabackup.
@@ -208,6 +215,7 @@ The TUI provides:
 - log viewer for daily logs and the run index
 - run history from `backup-runs.jsonl`
 - Health page for latest run status, runtime metadata, scheduler guidance, and logical/physical prerequisite checks
+- Observability page for metrics-path state, last metrics write result, and parsed `.prom` values
 - Systemd page for user service/timer actions and rendered unit previews
 - command palette for fast keyboard control, API auth toggle, and bearer token rotation
 - global notifications for command success, failure, confirmations, saves, and silent state changes
@@ -237,11 +245,12 @@ go build -o sdl-db-backup-tui ./cmd/sdl-db-backup-tui
 - `Logs`: daily logs and run index viewer with filtering
 - `History`: previous runs from `backup-runs.jsonl`
 - `Health`: latest recorded run, effective runtime values, scheduler guidance, and prerequisite checks
+- `Observability`: inspect metrics-path permissions, last metrics refresh result, and parsed Prometheus values
 - `Systemd`: manage user service/timer units, review generated unit templates, and keep scheduling user-scoped
 
 ### TUI Keyboard Controls
 
-- `1` to `8`: jump directly to `Dashboard`, `Backup`, `Schedule`, `Config`, `Logs`, `History`, `Health`, and `Systemd`
+- `1` to `9`: jump directly to `Dashboard`, `Backup`, `Schedule`, `Config`, `Logs`, `History`, `Health`, `Observability`, and `Systemd`
 - `Tab`: switch focus between the left menu and the current page content
 - `Esc`: move focus back to the left menu
 - `j` / `k` or arrow keys: move through lists, settings, workflow options, and actions
@@ -265,8 +274,8 @@ From the `Config` page:
 3. Press `/` to search by env key, group, label, or value
 4. Move through matching settings with `j` / `k` or arrow keys
 5. Press `Enter` to edit the selected value
-6. Press `Enter` again to apply the new value, or `Esc` to cancel editing
-7. Press `s` or `Ctrl+S` to save `.env`
+6. Press `Enter` again to apply the new value to the temporary draft, or `Esc` to cancel editing
+7. Press `Ctrl+S` to safely write your drafted changes back to the permanent `.env` file!
 
 Notes:
 
@@ -303,7 +312,7 @@ Schedule fields:
 - `Physical/S3 Backup Time` writes `BACKUP_PHYSICAL_SCHEDULE`
 - `Logical S3 Upload` writes `BACKUP_LOGICAL_S3_UPLOAD_ENABLED`
 - `Physical S3 Stream` writes `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`
-- `Retention Days` writes `BACKUP_RETENTION_DAYS`
+- `Retention Daily` writes `BACKUP_RETENTION_DAILY`
 
 Permanent changes:
 
@@ -342,15 +351,17 @@ From the `Backup` page:
    - Press `Esc`, `b`, left arrow, or `h` inside an object list to return to the database list
    - Press `p` or `Ctrl+S` to save the current selected scope permanently to `.env`
 4. Leave `Force Run Now` enabled if you want the run to ignore the saved schedule for that one execution
-5. Review the preview panel
-6. Activate `Run Backup`
-7. Watch progress in the same `Backup` page live log panel
+5. Optionally enable `Preflight Only` if you want validation without producing backup artifacts
+6. Review the preview panel
+7. Activate `Run Backup` or `Run Preflight`
+8. Watch progress in the same `Backup` page live log panel
 
 Manual run notes:
 
 - the manual preview uses in-memory overrides only
 - `.env` is not rewritten unless you explicitly save from `Config`
 - `local only` disables uploads for that run
+- `preflight only` validates MySQL connectivity, directory permissions, metrics-path writability, and upload prerequisites without creating backups
 - physical backup is skipped in `local only` mode because physical backup currently supports direct S3 streaming only
 - database/table selection applies to logical backups only
 - no database selected means all granted databases

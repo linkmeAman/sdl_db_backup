@@ -155,6 +155,25 @@ func TestBuildManualRunConfigLocalOnlyDisablesPhysical(t *testing.T) {
 	}
 }
 
+func TestBuildManualRunConfigPreflightOnlyMarksConfigAndPreview(t *testing.T) {
+	cfg := Config{LogicalEnabled: true}
+	out, preview, err := BuildManualRunConfig(cfg, ManualRunOptions{
+		Mode:          ManualRunLogicalOnly,
+		UploadMode:    ManualUploadNormal,
+		ForceNow:      true,
+		PreflightOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildManualRunConfig returned error: %v", err)
+	}
+	if !out.PreflightOnly {
+		t.Fatalf("expected preflight-only flag enabled")
+	}
+	if !strings.Contains(strings.Join(preview.Lines, "\n"), "Run type: preflight only") {
+		t.Fatalf("expected preview to describe preflight-only mode: %+v", preview)
+	}
+}
+
 func TestParseSystemdShow(t *testing.T) {
 	state := parseSystemdShow("LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\n", "svc")
 	if state.LoadState != "loaded" || state.Active != "active" || state.SubState != "running" || state.Enabled != "enabled" {
@@ -411,11 +430,13 @@ func TestGetHealthReportWithDisabledBackups(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	logDir := filepath.Join(dir, "logs")
+	metricsPath := filepath.Join(dir, "collector", "sdl_db_backup.prom")
 	content := strings.Join([]string{
 		"DB_USER=tester",
 		"DB_PASS=testpass",
 		"BACKUP_DIR=" + dir,
 		"BACKUP_LOG_DIR=" + logDir,
+		"BACKUP_METRICS_FILE=" + metricsPath,
 		"BACKUP_LOGICAL_ENABLED=false",
 		"BACKUP_PHYSICAL_ENABLED=false",
 	}, "\n") + "\n"
@@ -424,6 +445,9 @@ func TestGetHealthReportWithDisabledBackups(t *testing.T) {
 	}
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatalf("create log dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(metricsPath), 0o755); err != nil {
+		t.Fatalf("create metrics dir: %v", err)
 	}
 	runsPath := filepath.Join(logDir, "backup-runs.jsonl")
 	runs := `{"timestamp":"2026-05-28T12:00:00Z","run_id":"run-1","status":"success","run_folder":"/tmp/run-1","log_file":"/tmp/run-1.log","duration":"4s","databases_total":0,"databases_succeeded":0,"databases_failed":0}
@@ -445,8 +469,31 @@ func TestGetHealthReportWithDisabledBackups(t *testing.T) {
 	if report.Physical.Status != "disabled" {
 		t.Fatalf("expected physical disabled, got %q", report.Physical.Status)
 	}
+	if report.Metrics.Status != "ok" {
+		t.Fatalf("expected metrics health ok, got %q (%s)", report.Metrics.Status, report.Metrics.Message)
+	}
+	if len(report.Directories) != 3 {
+		t.Fatalf("expected 3 directory checks, got %d", len(report.Directories))
+	}
 	expectedDaily := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
 	if report.DailyLogPath != expectedDaily {
 		t.Fatalf("expected daily log path %q, got %q", expectedDaily, report.DailyLogPath)
+	}
+}
+
+func TestFilterDatabasesExcludesBackupPrefixedDatabasesByDefault(t *testing.T) {
+	discovered := []string{"pf_main", "bk_pf_main", "pf_central"}
+	filtered := filterDatabases(config{}, discovered)
+	if strings.Join(filtered, ",") != "pf_main,pf_central" {
+		t.Fatalf("unexpected filtered databases: %v", filtered)
+	}
+}
+
+func TestFilterDatabasesAllowsExplicitBackupPrefixedDatabases(t *testing.T) {
+	cfg := config{LogicalDatabases: []string{"bk_pf_main"}}
+	discovered := []string{"pf_main", "bk_pf_main", "pf_central"}
+	filtered := filterDatabases(cfg, discovered)
+	if strings.Join(filtered, ",") != "bk_pf_main" {
+		t.Fatalf("unexpected filtered databases: %v", filtered)
 	}
 }

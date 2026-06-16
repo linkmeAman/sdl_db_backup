@@ -36,6 +36,10 @@ Recent operator-facing changes:
 - added `backup-runs.jsonl` as a structured run index
 - changed logical dump generation so dump files do not start with `USE db_name;`
 - added `--no-tablespaces` to logical dumps for least-privilege MySQL backup users
+- **V2**: Added multi-database engine support (`DB_ENGINE=postgres`) with native `pg_dump` and `psql` integration
+- **V2**: Added AES-256-CFB stream encryption at rest via `BACKUP_ENCRYPTION_KEY`
+- **V2**: Replaced flat retention days with Grandfather-Father-Son (GFS) rotation (`BACKUP_RETENTION_DAILY`, `BACKUP_RETENTION_WEEKLY`, `BACKUP_RETENTION_MONTHLY`)
+- **V2**: Added `Ctrl+S` saving to the TUI Config Editor to safely overwrite `.env` with drafted changes
 
 See `README.md` for the current commands, TUI controls, logging layout, and configuration flow.
 
