@@ -239,8 +239,24 @@ func (s *apiServer) routePath(w http.ResponseWriter, r *http.Request, cfg config
 			return
 		}
 		writeAPIData(w, http.StatusOK, profile)
-	case path == "restore" && r.Method == http.MethodGet:
-		writeAPIError(w, http.StatusNotImplemented, "restore_not_implemented", "restore operations are not implemented in this version", nil)
+	case path == "restore/validate" && r.Method == http.MethodPost:
+		var payload struct {
+			RunID string `json:"run_id"`
+		}
+		if err := decodeJSON(r, &payload); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_json", err.Error(), nil)
+			return
+		}
+		if payload.RunID == "" {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "run_id is required", nil)
+			return
+		}
+		res, err := ValidateLogicalRun(cfg, payload.RunID)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "validation_failed", err.Error(), nil)
+			return
+		}
+		writeAPIData(w, http.StatusOK, res)
 	default:
 		writeAPIError(w, http.StatusNotFound, "not_found", "route not found", nil)
 	}

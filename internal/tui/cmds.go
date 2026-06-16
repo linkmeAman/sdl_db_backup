@@ -33,6 +33,8 @@ func (m model) commands() []commandDef {
 		context = append(context, commandDef{"backup", "Start manual backup workflow"})
 	case screenHealth:
 		context = append(context, commandDef{"health", "Refresh health"})
+	case screenObservability:
+		context = append(context, commandDef{"observability", "Refresh observability"})
 	case screenSystemd:
 		context = append(context, commandDef{"systemd-refresh", "Refresh systemd status"})
 	}
@@ -44,6 +46,7 @@ func (m model) commands() []commandDef {
 		{"logs", "Open logs"},
 		{"history", "Open run history"},
 		{"health", "Refresh health"},
+		{"observability", "Open observability"},
 		{"systemd", "Open systemd"},
 		{"save", "Save config"},
 		{"rotate-api-token", "Rotate API bearer token"},
@@ -118,6 +121,9 @@ func (m model) runCommand(id string) (model, tea.Cmd) {
 		return m, loadHistory(m.cfg.RunLogPath)
 	case "health":
 		m.setScreen(screenHealth)
+		return m, loadHealth(m.envPath)
+	case "observability":
+		m.setScreen(screenObservability)
 		return m, loadHealth(m.envPath)
 	case "systemd":
 		m.setScreen(screenSystemd)
@@ -308,4 +314,19 @@ func runSystemd(envPath, label string, action backupapp.SystemdAction) tea.Cmd {
 
 func readRunHistory(path string) ([]backupapp.RunResult, error) {
 	return backupapp.ReadRunHistory(path)
+}
+
+func validateLogicalRunCmd(cfg backupapp.Config, runID string) tea.Cmd {
+	return func() tea.Msg {
+		res, err := backupapp.ValidateLogicalRun(cfg, runID)
+		return validationMsg{result: res, err: err}
+	}
+}
+
+func testRestoreRunCmd(cfg backupapp.Config, runID string) tea.Cmd {
+	return func() tea.Msg {
+		// Pass nil for progress currently since tea.Cmd is synchronous
+		res, err := backupapp.FullRestoreValidation(cfg, runID, nil)
+		return validationMsg{result: res, err: err}
+	}
 }

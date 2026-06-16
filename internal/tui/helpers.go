@@ -92,7 +92,7 @@ func (m model) scheduleRowValue(key string) string {
 	case "physical_upload":
 		return strconv.FormatBool(m.draft.PhysicalS3UploadEnabled)
 	case "retention":
-		return strconv.Itoa(m.draft.RetentionDays)
+		return strconv.Itoa(m.draft.RetentionDaily)
 	case "apply":
 		if m.scheduleModeTemp {
 			return "save temporary override"
@@ -163,7 +163,7 @@ func (m model) scheduleChoices(key string) []scheduleChoice {
 			{label: "Keep 7 days", value: "7", hint: "One week of local logical backups."},
 			{label: "Keep 14 days", value: "14", hint: "More rollback history, higher disk usage."},
 			{label: "Keep 30 days", value: "30", hint: "Long local retention, requires enough disk."},
-			{label: "Custom value", value: strconv.Itoa(m.draft.RetentionDays), hint: "Press e to type a custom number."},
+			{label: "Custom value", value: strconv.Itoa(m.draft.RetentionDaily), hint: "Press e to type a custom number."},
 		}
 	default:
 		return nil
@@ -222,7 +222,7 @@ func (m *model) applyScheduleValue(key, value string) error {
 		if err != nil || days < 0 {
 			return fmt.Errorf("retention days must be a non-negative integer")
 		}
-		m.draft.RetentionDays = days
+		m.draft.RetentionDaily = days
 	default:
 		return fmt.Errorf("field cannot be edited directly")
 	}
@@ -242,7 +242,7 @@ func (m model) applyScheduleChanges() (model, tea.Cmd) {
 				"BACKUP_PHYSICAL_SCHEDULE":          m.draft.PhysicalSchedule,
 				"BACKUP_LOGICAL_S3_UPLOAD_ENABLED":  strconv.FormatBool(m.draft.LogicalS3UploadEnabled),
 				"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED": strconv.FormatBool(m.draft.PhysicalS3UploadEnabled),
-				"BACKUP_RETENTION_DAYS":             strconv.Itoa(m.draft.RetentionDays),
+				"BACKUP_RETENTION_DAILY":            strconv.Itoa(m.draft.RetentionDaily),
 			},
 		}
 		m.draft = m.cfg
@@ -517,8 +517,14 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 	addDuration("Tuning", "BACKUP_RETRY_MAX_DELAY", "Retry Max Delay", cfg.RetryMaxDelay, func(c *backupapp.Config, v time.Duration) { c.RetryMaxDelay = v })
 	addDuration("Tuning", "BACKUP_DISCOVERY_TIMEOUT", "Discovery Timeout", cfg.DiscoveryTimeout, func(c *backupapp.Config, v time.Duration) { c.DiscoveryTimeout = v })
 	addDuration("Tuning", "BACKUP_PREFLIGHT_TIMEOUT", "Preflight Timeout", cfg.PreflightTimeout, func(c *backupapp.Config, v time.Duration) { c.PreflightTimeout = v })
-	addInt("Tuning", "BACKUP_RETENTION_DAYS", "Retention Days", cfg.RetentionDays, func(c *backupapp.Config, v int) { c.RetentionDays = v })
+	addInt("Retention", "BACKUP_RETENTION_DAILY", "Daily Backups", cfg.RetentionDaily, func(c *backupapp.Config, v int) { c.RetentionDaily = v })
+	addInt("Retention", "BACKUP_RETENTION_WEEKLY", "Weekly Backups", cfg.RetentionWeekly, func(c *backupapp.Config, v int) { c.RetentionWeekly = v })
+	addInt("Retention", "BACKUP_RETENTION_MONTHLY", "Monthly Backups", cfg.RetentionMonthly, func(c *backupapp.Config, v int) { c.RetentionMonthly = v })
 	addBool("Tuning", "BACKUP_CLEANUP_FAIL_FATAL", "Cleanup Fatal", cfg.CleanupFailFatal, func(c *backupapp.Config, v bool) { c.CleanupFailFatal = v })
+
+	addString("Metrics", "BACKUP_METRICS_JOB", "Prometheus Job", cfg.MetricsJob, false, func(c *backupapp.Config, v string) { c.MetricsJob = v })
+	addString("Metrics", "BACKUP_METRICS_SERVICE", "Prometheus Service", cfg.MetricsService, false, func(c *backupapp.Config, v string) { c.MetricsService = v })
+	addString("Metrics", "BACKUP_METRICS_ENV", "Prometheus Env", cfg.MetricsEnv, false, func(c *backupapp.Config, v string) { c.MetricsEnv = v })
 
 	return fields
 }

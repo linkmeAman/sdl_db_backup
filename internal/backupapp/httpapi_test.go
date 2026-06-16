@@ -110,23 +110,3 @@ func TestAPIAuthEnabledRejectsMissingToken(t *testing.T) {
 	}
 }
 
-func TestAPIRestoreIsNotImplemented(t *testing.T) {
-	dir := t.TempDir()
-	envPath := filepath.Join(dir, ".env")
-	content := strings.Join([]string{
-		"BACKUP_DIR=" + dir,
-		"BACKUP_LOG_DIR=" + filepath.Join(dir, "logs"),
-		"BACKUP_API_ENABLED=true",
-	}, "\n") + "\n"
-	if err := os.WriteFile(envPath, []byte(content), 0o640); err != nil {
-		t.Fatalf("write env: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/restore", nil)
-	rec := httptest.NewRecorder()
-	(&apiServer{envPath: envPath}).routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("expected 501, got %d body=%s", rec.Code, rec.Body.String())
-	}
-}

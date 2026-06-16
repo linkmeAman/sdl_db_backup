@@ -28,6 +28,7 @@ const (
 	screenLogs
 	screenHistory
 	screenHealth
+	screenObservability
 	screenSystemd
 )
 
@@ -70,6 +71,7 @@ type model struct {
 	cfg     backupapp.Config
 	draft   backupapp.Config
 	dirty   bool
+	quitting bool
 
 	width  int
 	height int
@@ -84,7 +86,8 @@ type model struct {
 	systemd      backupapp.UnitStatus
 	systemdErr   string
 	systemdLast  string
-	history      []backupapp.RunResult
+	history         []backupapp.RunResult
+	historySelected int
 	historyErr   string
 
 	fields         []configField
@@ -113,6 +116,7 @@ type model struct {
 	manualMode          backupapp.ManualRunMode
 	manualUpload        backupapp.ManualUploadMode
 	manualForce         bool
+	manualPreflight     bool
 	manualSelected      int
 	scopeLevel          string
 	scopeLoading        bool
@@ -140,9 +144,10 @@ type model struct {
 	spinner             spinner.Model
 	progress            progress.Model
 
-	dashboardView viewport.Model
-	healthView    viewport.Model
-	systemdView   viewport.Model
+	dashboardView     viewport.Model
+	healthView        viewport.Model
+	observabilityView viewport.Model
+	systemdView       viewport.Model
 
 	logView       viewport.Model
 	logLines      []string
@@ -179,6 +184,11 @@ type historyMsg struct {
 	err  error
 }
 
+type validationMsg struct {
+	result backupapp.LogicalValidationResult
+	err    error
+}
+
 type scopeDatabasesMsg struct {
 	databases []string
 	err       error
@@ -212,6 +222,14 @@ type startBackupMsg struct {
 	cfg backupapp.Config
 }
 
+type tickToastMsg time.Time
+
+func tickToast() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickToastMsg(t)
+	})
+}
+
 type saveConfigMsg struct {
 	cfg backupapp.Config
 	err error
@@ -239,27 +257,27 @@ type systemdActionMsg struct {
 }
 
 var (
-	colorBG      = lipgloss.Color("#0D1117")
-	colorPanel   = lipgloss.Color("#161B22")
-	colorPanel2  = lipgloss.Color("#1C2128")
-	colorBorder  = lipgloss.Color("#30363D")
-	colorMuted   = lipgloss.Color("#8B949E")
-	colorText    = lipgloss.Color("#F0F6FC")
-	colorAccent  = lipgloss.Color("#58A6FF")
-	colorGood    = lipgloss.Color("#3FB950")
-	colorWarn    = lipgloss.Color("#D29922")
-	colorBad     = lipgloss.Color("#F85149")
-	colorMagenta = lipgloss.Color("#BC8CFF")
+	colorBG      = lipgloss.Color("#24273A")
+	colorPanel   = lipgloss.Color("#363A4F")
+	colorPanel2  = lipgloss.Color("#494D64")
+	colorBorder  = lipgloss.Color("#5B6078")
+	colorMuted   = lipgloss.Color("#8087A2")
+	colorText    = lipgloss.Color("#CAD3F5")
+	colorAccent  = lipgloss.Color("#8AADF4")
+	colorGood    = lipgloss.Color("#A6DA95")
+	colorWarn    = lipgloss.Color("#EED49F")
+	colorBad     = lipgloss.Color("#ED8796")
+	colorMagenta = lipgloss.Color("#C6A0F6")
 
 	baseStyle          = lipgloss.NewStyle().Foreground(colorText).Background(colorBG)
 	panel              = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 1)
 	activePanel        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorAccent).Background(colorPanel).Padding(0, 1)
-	inactivePanel      = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 1)
+	inactivePanel      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 1)
 	floatingPanel      = lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(colorAccent).Background(colorPanel).Padding(1, 2)
-	sidebarPanel       = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 1).BorderRight(false)
-	sidebarPanelActive = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorAccent).Background(colorPanel).Padding(0, 1).BorderRight(false)
-	contentPanel       = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 2)
-	contentPanelActive = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(colorAccent).Background(colorPanel).Padding(0, 2)
+	sidebarPanel       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 1).BorderRight(false)
+	sidebarPanelActive = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorAccent).Background(colorPanel).Padding(0, 1).BorderRight(false)
+	contentPanel       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorBorder).Background(colorPanel).Padding(0, 2)
+	contentPanelActive = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colorAccent).Background(colorPanel).Padding(0, 2)
 	fileBlock          = lipgloss.NewStyle().Background(colorPanel2).Padding(0, 1)
 	title              = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	sectionTitle       = lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Underline(true)
@@ -267,31 +285,33 @@ var (
 	good               = lipgloss.NewStyle().Foreground(colorGood).Bold(true)
 	warn               = lipgloss.NewStyle().Foreground(colorWarn).Bold(true)
 	bad                = lipgloss.NewStyle().Foreground(colorBad).Bold(true)
-	selected           = lipgloss.NewStyle().Foreground(colorBG).Background(colorAccent).Bold(true).Padding(0, 1)
-	selectedDim        = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	selected           = lipgloss.NewStyle().Foreground(colorText).Background(colorPanel2).Bold(true).Padding(0, 1).Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(colorAccent)
+	selectedDim        = lipgloss.NewStyle().Foreground(colorText).Background(colorPanel2).Bold(true).Padding(0, 1).Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(colorMuted)
 	statusPill         = lipgloss.NewStyle().Foreground(colorBG).Background(colorAccent).Bold(true).Padding(0, 1)
 	statusDimPill      = lipgloss.NewStyle().Foreground(colorText).Background(colorBorder).Padding(0, 1)
 	keyHint            = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	rowAlt             = lipgloss.NewStyle().Background(colorPanel2)
+	rowSelected        = lipgloss.NewStyle().Background(colorPanel2).Foreground(colorAccent).Bold(true)
 )
 
 var screens = []struct {
 	name string
 	key  string
 }{
-	{"📊 Dashboard", "1"},
-	{"💾 Backup", "2"},
-	{"📅 Schedule", "3"},
-	{"⚙ Config", "4"},
-	{"📜 Logs", "5"},
-	{"🕘 History", "6"},
-	{"🩺 Health", "7"},
-	{"🛠 Systemd", "8"},
+	{"󰋎 Dashboard", "1"},
+	{"󰆼 Backup", "2"},
+	{"󰃰 Schedule", "3"},
+	{"󰒓 Config", "4"},
+	{"󰈙 Logs", "5"},
+	{"󰔟 History", "6"},
+	{"󰓥 Health", "7"},
+	{"󰆍 Observability", "8"},
+	{"󰒋 Systemd", "9"},
 }
 
 func Run(envPath string, cfg backupapp.Config) error {
 	m := newModel(envPath, cfg)
-	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
@@ -327,6 +347,7 @@ func newModel(envPath string, cfg backupapp.Config) model {
 	configView := viewport.New(80, 12)
 	dashboardView := viewport.New(80, 12)
 	healthView := viewport.New(80, 12)
+	observabilityView := viewport.New(80, 12)
 	systemdView := viewport.New(80, 12)
 
 	m := model{
@@ -338,6 +359,7 @@ func newModel(envPath string, cfg backupapp.Config) model {
 		fields:              buildConfigFields(cfg),
 		dashboardView:       dashboardView,
 		healthView:          healthView,
+		observabilityView:   observabilityView,
 		systemdView:         systemdView,
 		configView:          configView,
 		searchInput:         search,
@@ -347,6 +369,7 @@ func newModel(envPath string, cfg backupapp.Config) model {
 		manualMode:          backupapp.ManualRunBoth,
 		manualUpload:        backupapp.ManualUploadNormal,
 		manualForce:         true,
+		manualPreflight:     false,
 		scopeLevel:          "databases",
 		scopeDBMark:         -1,
 		scopeTableMark:      -1,
@@ -376,6 +399,7 @@ func (m model) Init() tea.Cmd {
 		loadHistory(m.cfg.RunLogPath),
 		loadLogs("daily", filepath.Join(m.cfg.LogDir, time.Now().Format("2006-01-02")+".log")),
 		m.spinner.Tick,
+		tickToast(),
 	)
 }
 
@@ -387,6 +411,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 
 	switch msg := msg.(type) {
+	case tickToastMsg:
+		now := time.Now()
+		var valid []toast
+		for _, t := range m.toasts {
+			if now.Sub(t.at) < 4*time.Second {
+				valid = append(valid, t)
+			}
+		}
+		if len(valid) != len(m.toasts) {
+			m.toasts = valid
+			m.resizeViewports()
+		}
+		cmds = append(cmds, tickToast())
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -418,8 +455,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.historyErr = ""
 		if msg.err != nil {
 			m.historyErr = msg.err.Error()
+			m.pushToast("error", "history load failed: "+msg.err.Error())
 		} else {
 			m.history = msg.runs
+			if m.historySelected >= len(m.history) {
+				m.historySelected = max(0, len(m.history)-1)
+			}
+		}
+	case validationMsg:
+		if msg.err != nil {
+			m.pushToast("error", "validation failed: "+msg.err.Error())
+		} else if !msg.result.Valid {
+			m.pushToast("error", "validation failed: "+msg.result.Error)
+		} else {
+			m.pushToast("ok", "run "+msg.result.RunID+" validated successfully ("+strconv.Itoa(len(msg.result.Databases))+" DBs)")
 		}
 	case scopeDatabasesMsg:
 		m.scopeLoading = false
@@ -562,6 +611,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	wasCommandOpen := m.commandOpen
+	
 	if key, ok := msg.(tea.KeyMsg); ok {
 		updated, keyCmd := m.handleKey(key)
 		m = updated
@@ -569,8 +620,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.commandOpen {
-		m.commandInput, cmd = m.commandInput.Update(msg)
-		cmds = append(cmds, cmd)
+		if wasCommandOpen {
+			m.commandInput, cmd = m.commandInput.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return m, tea.Batch(cmds...)
 	}
 	if m.helpOpen || m.confirmMessage != "" {
@@ -610,13 +663,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 	m.configView, cmd = m.configView.Update(msg)
 	cmds = append(cmds, cmd)
+	m.dashboardView, cmd = m.dashboardView.Update(msg)
+	cmds = append(cmds, cmd)
+	m.healthView, cmd = m.healthView.Update(msg)
+	cmds = append(cmds, cmd)
+	m.observabilityView, cmd = m.observabilityView.Update(msg)
+	cmds = append(cmds, cmd)
+	m.systemdView, cmd = m.systemdView.Update(msg)
+	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
 func (m model) screenRefreshCmd() tea.Cmd {
 	switch m.activeScreen {
-	case screenDashboard, screenHealth:
+	case screenDashboard, screenHealth, screenObservability:
 		return loadHealth(m.envPath)
 	case screenSchedule:
 		return loadTemporaryOverrides(m.envPath)
@@ -666,11 +727,18 @@ func (m model) applyManualSelection() (model, tea.Cmd) {
 		if m.manualSelected == 0 {
 			m.manualForce = !m.manualForce
 			m.notifyAction("force run now set to " + strconv.FormatBool(m.manualForce))
+		} else if m.manualSelected == 1 {
+			m.manualPreflight = !m.manualPreflight
+			m.notifyAction("preflight only set to " + strconv.FormatBool(m.manualPreflight))
 		} else {
 			m.rebuildPreview()
 			cfg := m.runConfig
-			m.notifyAction("backup start confirmation opened")
-			m.confirm("Start manual backup now?", func() tea.Cmd {
+			actionLabel := "backup"
+			if m.manualPreflight {
+				actionLabel = "preflight"
+			}
+			m.notifyAction(actionLabel + " start confirmation opened")
+			m.confirm("Start manual "+actionLabel+" now?", func() tea.Cmd {
 				return func() tea.Msg { return startBackupMsg{cfg: cfg} }
 			})
 		}
@@ -696,7 +764,7 @@ func (m model) maxManualSelection() int {
 	case stepScope:
 		return 0
 	case stepPreview:
-		return 1
+		return 2
 	default:
 		return 0
 	}
@@ -704,9 +772,10 @@ func (m model) maxManualSelection() int {
 
 func (m *model) rebuildPreview() {
 	cfg, preview, err := backupapp.BuildManualRunConfig(m.draft, backupapp.ManualRunOptions{
-		Mode:       m.manualMode,
-		UploadMode: m.manualUpload,
-		ForceNow:   m.manualForce,
+		Mode:          m.manualMode,
+		UploadMode:    m.manualUpload,
+		ForceNow:      m.manualForce,
+		PreflightOnly: m.manualPreflight,
 	})
 	m.applyScopeToConfig(&cfg)
 	if err != nil {
