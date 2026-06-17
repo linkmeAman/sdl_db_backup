@@ -10,7 +10,7 @@ import (
 func TestValidateGzipSQLFile(t *testing.T) {
 	dir := t.TempDir()
 	validPath := filepath.Join(dir, "valid.sql.gz")
-	
+
 	// Create a valid gzip file
 	f, err := os.Create(validPath)
 	if err != nil {
@@ -30,7 +30,7 @@ func TestValidateGzipSQLFile(t *testing.T) {
 	}
 
 	invalidPath := filepath.Join(dir, "invalid.sql.gz")
-	
+
 	// Create an invalid gzip file (missing dump completed)
 	f2, _ := os.Create(invalidPath)
 	gw2 := gzip.NewWriter(f2)

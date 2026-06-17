@@ -145,6 +145,7 @@ type model struct {
 	progress            progress.Model
 
 	dashboardView     viewport.Model
+	dashboardSelected int
 	healthView        viewport.Model
 	observabilityView viewport.Model
 	systemdView       viewport.Model

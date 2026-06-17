@@ -32,7 +32,7 @@ func metricsLabelString(cfg config) string {
 	}
 	env := strings.TrimSpace(cfg.MetricsEnv)
 	region := strings.TrimSpace(cfg.MetricsRegion)
-	
+
 	labels := []string{fmt.Sprintf(`job=%q`, job), fmt.Sprintf(`service=%q`, service)}
 	if env != "" {
 		labels = append(labels, fmt.Sprintf(`env=%q`, env))

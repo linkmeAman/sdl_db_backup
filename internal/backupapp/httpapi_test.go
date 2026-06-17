@@ -109,4 +109,3 @@ func TestAPIAuthEnabledRejectsMissingToken(t *testing.T) {
 		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
-

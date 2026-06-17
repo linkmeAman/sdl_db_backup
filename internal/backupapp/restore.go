@@ -150,13 +150,13 @@ func FullRestoreValidation(cfg Config, runID string, progress func(string)) (Log
 		if progress != nil {
 			progress(fmt.Sprintf("Testing restore for %s...", dbRes.Name))
 		}
-		
+
 		dbValid, dbErr := testRestoreDatabase(cfg, run.RunFolder, dbRes)
 		errMsg := ""
 		if dbErr != nil {
 			errMsg = dbErr.Error()
 		}
-		
+
 		res.Databases = append(res.Databases, DatabaseValidationResult{
 			Database: dbRes.Name,
 			Valid:    dbValid,
@@ -216,7 +216,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 	}()
 
 	importCmd := testCmd(tempDB)
-	
+
 	gzFile, err := os.Open(gzPath)
 	if err != nil {
 		return false, err

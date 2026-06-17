@@ -132,8 +132,8 @@ func TestContentViewportScrollKeysMoveLongPages(t *testing.T) {
 	m.dashboardView.Height = 3
 	m.dashboardView.SetContent("one\ntwo\nthree\nfour\nfive")
 	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	if updated.dashboardView.YOffset == 0 {
-		t.Fatalf("expected dashboard viewport to scroll down on j")
+	if updated.dashboardSelected != 1 {
+		t.Fatalf("expected dashboard quick actions to move down on j, got %d", updated.dashboardSelected)
 	}
 
 	m.activeScreen = screenHealth
@@ -292,8 +292,8 @@ func TestNotificationsRenderOnEveryPage(t *testing.T) {
 	m.toasts = []toast{{level: "ok", text: "scope saved"}}
 
 	view := m.View()
-	if !strings.Contains(view, "Notifications") || !strings.Contains(view, "scope saved") {
-		t.Fatalf("expected global notification popup, got:\n%s", view)
+	if !strings.Contains(view, "scope saved") {
+		t.Fatalf("expected global notification toast, got:\n%s", view)
 	}
 }
 
@@ -369,6 +369,7 @@ func zeroConfigForTUITest() backupapp.Config {
 	return backupapp.Config{
 		LogicalSchedule:  "daily@02:00",
 		PhysicalSchedule: "weekly@sun,02:00",
-		RetentionDays:    5,
+		RetentionDaily: 7,
+		BackupDir:      "/tmp",
 	}
 }

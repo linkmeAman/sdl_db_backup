@@ -247,7 +247,7 @@ func TestGetObservabilityReportReadsMetricsFile(t *testing.T) {
 		PhysicalDurationSeconds:    0,
 		MetricsLastUpdateTimestamp: 1760000001,
 	}
-	if err := writeBackupMetricsFile(path, snapshot, `job="sdl_db_backup",service="mysql"` ); err != nil {
+	if err := writeBackupMetricsFile(path, snapshot, `job="sdl_db_backup",service="mysql"`); err != nil {
 		t.Fatalf("writeBackupMetricsFile returned error: %v", err)
 	}
 

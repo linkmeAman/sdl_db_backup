@@ -210,15 +210,16 @@ func (m model) viewDashboard(width int) string {
 		}
 	}
 	lines = append(lines, "", title.Render("Quick Actions"))
-	lines = append(lines,
-		"b / 2  Manual backup workflow",
-		"3      Schedule manager",
-		"4      Search and edit config",
-		"5      View logs",
-		"7      Refresh health diagnostics",
-		"8      Inspect observability metrics",
-		":      Command palette",
-	)
+	actions := []string{
+		"Start manual backup workflow",
+		"Open schedule manager",
+		"Search and edit configuration",
+		"View execution logs",
+		"View run history",
+		"Refresh health diagnostics",
+		"Inspect observability metrics",
+	}
+	lines = append(lines, optionList(actions, m.dashboardSelected)...)
 	lines = append(lines, "", muted.Render("Monitoring guide: GRAFANA_BACKUP_MONITORING.md"))
 	m.dashboardView.SetContent(strings.Join(lines, "\n"))
 	return m.dashboardView.View()
@@ -993,7 +994,7 @@ func (m model) contextHelpHints() []string {
 	}
 	switch m.activeScreen {
 	case screenDashboard:
-		return []string{"j/k: Scroll dashboard", "PgUp/PgDn: Page dashboard", "Tab: Move focus"}
+		return []string{"j/k: Select action", "Enter: Run action", "Tab: Move focus"}
 	case screenHealth:
 		return []string{"j/k: Scroll health diagnostics", "PgUp/PgDn: Page health diagnostics", "r: Refresh health", "Grafana guide: GRAFANA_BACKUP_MONITORING.md"}
 	case screenObservability:

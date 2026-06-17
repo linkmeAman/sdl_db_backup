@@ -252,15 +252,32 @@ func loadLogs(source, path string) tea.Cmd {
 			return logsMsg{source: source, err: err}
 		}
 		defer file.Close()
-		lines := []string{}
+		var ring [1000]string
+		var count int
 		scanner := bufio.NewScanner(file)
 		scanner.Buffer(make([]byte, 1024), 1024*1024)
 		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
+			ring[count%1000] = scanner.Text()
+			count++
 		}
 		if err := scanner.Err(); err != nil {
 			return logsMsg{source: source, err: err}
 		}
+
+		var lines []string
+		if count > 1000 {
+			lines = make([]string, 0, 1000)
+			lines = append(lines, ring[count%1000:]...)
+			lines = append(lines, ring[:count%1000]...)
+		} else {
+			lines = make([]string, count)
+			copy(lines, ring[:count])
+		}
+
+		if count > 1000 {
+			lines = append([]string{fmt.Sprintf("... (showing last 1000 lines of %d total lines) ...", count)}, lines...)
+		}
+
 		return logsMsg{source: source, lines: lines, err: nil}
 	}
 }
