@@ -236,7 +236,7 @@ func TestSaveConfigPreservesUnknownAndAppendsManagedKeys(t *testing.T) {
 		MySQLBin:                "mysql",
 		MySQLDumpBin:            "mysqldump",
 		RetryCount:              3,
-		RetentionDays:           5,
+		RetentionDaily:          5,
 		LogicalEnabled:          true,
 		LogicalTimeoutPerDB:     30 * time.Minute,
 		LogicalS3UploadEnabled:  false,

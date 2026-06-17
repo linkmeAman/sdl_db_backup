@@ -187,6 +187,8 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 	}
 
 	switch m.activeScreen {
+	case screenDashboard:
+		return m.handleDashboardKey(key)
 	case screenBackup:
 		return m.handleBackupKey(key)
 	case screenSchedule:
@@ -203,12 +205,41 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) handleDashboardKey(key tea.KeyMsg) (model, tea.Cmd) {
+	switch key.String() {
+	case "j", "down":
+		m.dashboardSelected++
+		if m.dashboardSelected > 6 {
+			m.dashboardSelected = 6
+		}
+	case "k", "up":
+		m.dashboardSelected--
+		if m.dashboardSelected < 0 {
+			m.dashboardSelected = 0
+		}
+	case "enter":
+		switch m.dashboardSelected {
+		case 0:
+			m.setScreen(screenBackup)
+		case 1:
+			m.setScreen(screenSchedule)
+		case 2:
+			m.setScreen(screenConfig)
+		case 3:
+			m.setScreen(screenLogs)
+		case 4:
+			m.setScreen(screenHistory)
+		case 5:
+			m.setScreen(screenHealth)
+		case 6:
+			m.setScreen(screenObservability)
+		}
+	}
+	return m, nil
+}
+
 func (m model) handleContentViewportKey(key tea.KeyMsg) (model, tea.Cmd, bool) {
 	switch m.activeScreen {
-	case screenDashboard:
-		if handled := scrollViewportByKey(&m.dashboardView, key); handled {
-			return m, nil, true
-		}
 	case screenHealth:
 		if handled := scrollViewportByKey(&m.healthView, key); handled {
 			return m, nil, true

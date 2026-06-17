@@ -46,13 +46,29 @@ For Prometheus/Grafana monitoring details, see [GRAFANA_BACKUP_MONITORING.md](/v
 
 ## Setup (No Root)
 
+The easiest way to install and configure SDL DB Backup is by using the automated one-command installer. 
+
+This installer will automatically verify dependencies, compile the Go binaries, install them to your local `~/.local/bin` path, set up your configuration folder at `~/.config/sdl-db-backup`, generate a secure encryption key, and configure the background systemd service.
+
+```bash
+git clone https://github.com/your-repo/sdl-db-backup.git
+cd sdl-db-backup
+./install.sh
+```
+
+**After Installation**: The installer will alert you to manually configure your sensitive credentials. Run the TUI to edit them seamlessly:
+```bash
+sdl-db-backup-tui
+```
+Then press `4` to enter the Config Editor and update `DB_USER`, `DB_PASS`, and S3 secrets.
+
+### Manual Setup
+
+If you prefer to set up the system manually without the automated installer:
+
 1. Install required host tools:
    - `./scripts/install-tools.sh`
-   - This script stays repo-local: it can download a local Go toolchain under `.tools/` if Go is missing, but it does not use `apt`, `dpkg`, or `sudo`.
-   - It only checks for required host tools like `mysql`, `mysqldump`, `php`, `xtrabackup`, and `xbcloud` and will not modify the server package set.
-   - If you need the repo-local Go toolchain, source `./scripts/env.sh` in the current shell first.
-   - Optional: `./scripts/install-shortcuts.sh` to create `sdl-db-backup-tui` and `sdl-db-backup-run` in `~/.local/bin`.
-   - After that, you can run the shortcuts from any directory.
+   - Optional: `./scripts/install-shortcuts.sh`
 
 2. Create environment file:
    - `cp .env.example .env`
