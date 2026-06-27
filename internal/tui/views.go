@@ -62,16 +62,16 @@ func (m model) View() string {
 	}
 	reservedHeight := lipgloss.Height(status) + lipgloss.Height(commandView) + lipgloss.Height(helpView) + lipgloss.Height(confirmView)
 	mainHeight := clampNonNegative(m.height - reservedHeight)
-	
+
 	viewportAvailableHeight := mainHeight
 	if toastView != "" {
 		viewportAvailableHeight = clampNonNegative(mainHeight - lipgloss.Height(toastView))
 	}
-	
+
 	m.resizeViewportsFor(viewportAvailableHeight)
 	sidebar := m.viewSidebar(mainHeight)
 	content := m.viewContent(mainHeight, toastView)
-	
+
 	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 	view := lipgloss.JoinVertical(lipgloss.Left, main, status)
 	if commandView != "" {
@@ -150,9 +150,9 @@ func (m model) viewContent(height int, toastView string) string {
 	case screenSystemd:
 		body = m.viewSystemd(innerWidth)
 	}
-	
+
 	targetInnerHeight := clampNonNegative(height - 2)
-	
+
 	if toastView != "" {
 		targetBodyHeight := clampNonNegative(targetInnerHeight - lipgloss.Height(toastView))
 		body = lipgloss.NewStyle().
@@ -166,7 +166,7 @@ func (m model) viewContent(height int, toastView string) string {
 			Height(targetInnerHeight).MaxHeight(targetInnerHeight).
 			Render(body)
 	}
-	
+
 	pane := contentPanel
 	if m.focus == focusContent && !m.modalActive() {
 		pane = contentPanelActive
@@ -179,48 +179,176 @@ func (m model) modalActive() bool {
 }
 
 func (m model) viewDashboard(width int) string {
-	lines := []string{title.Render("Dashboard"), ""}
-	if !m.healthLoaded && m.healthErr == "" {
-		lines = append(lines, m.spinner.View()+" loading health...")
-	}
-	if m.healthErr != "" {
-		lines = append(lines, bad.Render("Health error: ")+m.healthErr)
-	}
-	if m.healthLoaded {
-		latest := "none"
-		if m.health.LatestRun != nil {
-			latest = fmt.Sprintf("%s at %s (%d/%d dbs)",
-				statusStyled(m.health.LatestRun.Status),
-				m.health.LatestRun.Timestamp.Format("2006-01-02 15:04"),
-				m.health.LatestRun.DatabasesSucceeded,
-				m.health.LatestRun.DatabasesTotal,
+	lines := []string{}
+
+	// ── LIVE BACKUP ACTIVITY (shown when a backup is running) ────────────
+	if m.running {
+		elapsed := time.Since(m.runStartedAt)
+		elapsedStr := fmt.Sprintf("%02d:%02d", int(elapsed.Minutes()), int(elapsed.Seconds())%60)
+
+		lines = append(lines,
+			warn.Render("⚡ BACKUP IN PROGRESS"),
+			fmt.Sprintf("  %s  Elapsed: %s    Stage: %s",
+				m.spinner.View(),
+				title.Render(elapsedStr),
+				muted.Render(emptyDefault(m.runProgress.currentStage, "starting...")),
+			),
+		)
+		if m.runProgress.total > 0 {
+			lines = append(lines,
+				fmt.Sprintf("  Databases: %s / %s    Current: %s",
+					good.Render(fmt.Sprintf("%d done", m.runProgress.completed)),
+					title.Render(fmt.Sprintf("%d total", m.runProgress.total)),
+					muted.Render(emptyDefault(m.runProgress.currentDB, "-")),
+				),
+				"  "+m.progress.ViewAs(m.runProgress.percent()),
 			)
+		} else {
+			lines = append(lines, "  "+m.progress.ViewAs(0))
+		}
+
+		lines = append(lines, "", muted.Render("  ── Live Log ─────────────────────────────────────────────"))
+		tail := m.runLogLines
+		if len(tail) > 12 {
+			tail = tail[len(tail)-12:]
+		}
+		for _, l := range tail {
+			lines = append(lines, "  "+muted.Render(l))
+		}
+		if len(m.runLogLines) == 0 {
+			lines = append(lines, "  "+muted.Render("waiting for log output..."))
 		}
 		lines = append(lines,
-			card("Latest Run", latest, width),
-			card("Logical", healthLine(m.health.Logical), width),
-			card("Physical", healthLine(m.health.Physical), width),
-			card("Metrics", healthLine(m.health.Metrics), width),
-			card("Runtime", fmt.Sprintf("user=%s source=%s", m.health.Runtime.CurrentUser, m.health.Runtime.ExecutionSource), width),
-			card("API", fmt.Sprintf("enabled=%t auth=%t addr=%s", m.cfg.APIEnabled, m.cfg.APIAuthEnabled, m.cfg.APIListenAddr), width),
-			card("Logs", "daily: "+m.health.DailyLogPath, width),
+			muted.Render("  ─────────────────────────────────────────────────────────"),
+			"",
+			muted.Render("  Stay here to watch live, or press 2 to go to the Backup screen for full control."),
+			"",
 		)
-		if m.health.Runtime.PotentialConflictReason != "" {
-			lines = append(lines, warn.Render("Scheduler warning: ")+m.health.Runtime.PotentialConflictReason)
+	}
+
+	// ── LAST COMPLETED RUN ────────────────────────────────────────────────
+	lines = append(lines, title.Render("Last Completed Run"))
+	if !m.healthLoaded && m.healthErr == "" {
+		lines = append(lines, "  "+m.spinner.View()+" loading...")
+	} else if m.healthErr != "" {
+		lines = append(lines, "  "+bad.Render("Health error: ")+m.healthErr)
+	} else if m.health.LatestRun == nil {
+		lines = append(lines, "  "+muted.Render("No run recorded yet — start a backup from the Backup screen (2)."))
+	} else {
+		r := m.health.LatestRun
+		age := time.Since(r.Timestamp)
+		var ageStr string
+		switch {
+		case age < time.Minute:
+			ageStr = fmt.Sprintf("%ds ago", int(age.Seconds()))
+		case age < time.Hour:
+			ageStr = fmt.Sprintf("%dm ago", int(age.Minutes()))
+		default:
+			ageStr = fmt.Sprintf("%.1fh ago", age.Hours())
+		}
+		lines = append(lines,
+			fmt.Sprintf("  %s  %s  %d/%d dbs  took %s",
+				statusStyled(r.Status), muted.Render(ageStr),
+				r.DatabasesSucceeded, r.DatabasesTotal, r.Duration,
+			),
+		)
+		if r.RunID != "" {
+			lines = append(lines, "  "+muted.Render("Run ID: ")+r.RunID)
+		}
+		if r.LogFile != "" {
+			lines = append(lines, "  "+muted.Render("Log:    ")+r.LogFile)
+		}
+		if r.ValidationStatus != "" {
+			vs := good
+			if r.ValidationStatus != "success" {
+				vs = bad
+			}
+			lines = append(lines, "  "+muted.Render("Validation: ")+vs.Render(r.ValidationStatus)+" via "+emptyDefault(r.ValidationMode, "validation"))
+		} else {
+			lines = append(lines, "  "+muted.Render("Validation: not run — press 6 History to validate"))
+		}
+		if r.FailureReason != "" {
+			lines = append(lines, "  "+bad.Render("Failure: ")+r.FailureReason)
+		}
+		if r.LogicalUploadError != "" {
+			lines = append(lines, "  "+bad.Render("Upload error: ")+r.LogicalUploadError)
+		}
+		if r.AdaptiveLogicalParallel > 0 {
+			lines = append(lines,
+				"  "+muted.Render(fmt.Sprintf("Parallelism: logical=%d  physical=%d  xbcloud=%d  load/cpu=%.2f",
+					r.AdaptiveLogicalParallel, r.AdaptivePhysicalParallel, r.AdaptiveXbcloudParallel, r.AdaptiveLoadPerCPU)),
+			)
 		}
 	}
+
+	// ── THIS SESSION'S MANUAL RUN (only if it differs from the persisted latest) ──
+	if m.runResult != nil {
+		latestRunID := ""
+		if m.health.LatestRun != nil {
+			latestRunID = m.health.LatestRun.RunID
+		}
+		if m.runResult.RunID != latestRunID {
+			lines = append(lines, "",
+				title.Render("This Session's Manual Run"),
+				fmt.Sprintf("  %s  %s  %d/%d dbs  took %s",
+					statusStyled(m.runResult.Status),
+					muted.Render(m.runResult.Timestamp.Format("15:04:05")),
+					m.runResult.DatabasesSucceeded, m.runResult.DatabasesTotal,
+					m.runResult.Duration,
+				),
+			)
+		}
+	}
+
+	// ── SYSTEM HEALTH ─────────────────────────────────────────────────────
+	lines = append(lines, "", title.Render("System Health"))
+	if m.healthLoaded {
+		icon := func(c backupapp.HealthCheck) string {
+			switch c.Status {
+			case "ok":
+				return good.Render("✔") + " " + c.Message
+			case "warn", "warning":
+				return warn.Render("⚠") + " " + c.Message
+			default:
+				return bad.Render("✖") + " " + c.Message
+			}
+		}
+		lines = append(lines,
+			fmt.Sprintf("  %-12s %s", "Logical:", icon(m.health.Logical)),
+			fmt.Sprintf("  %-12s %s", "Physical:", icon(m.health.Physical)),
+			fmt.Sprintf("  %-12s %s", "Metrics:", icon(m.health.Metrics)),
+		)
+		if m.health.Runtime.PotentialConflictReason != "" {
+			lines = append(lines, "  "+warn.Render("⚠ Scheduler conflict: ")+m.health.Runtime.PotentialConflictReason)
+		}
+		lines = append(lines,
+			"  "+muted.Render(fmt.Sprintf("User: %s   Source: %s   Scheduler: %s",
+				m.health.Runtime.CurrentUser,
+				m.health.Runtime.ExecutionSource,
+				emptyDefault(m.health.Runtime.SchedulerContext, "unknown"),
+			)),
+		)
+		if m.cfg.APIEnabled {
+			lines = append(lines, "  "+muted.Render(fmt.Sprintf("API: %s (auth=%t)", m.cfg.APIListenAddr, m.cfg.APIAuthEnabled)))
+		}
+	} else if m.healthErr == "" {
+		lines = append(lines, "  "+muted.Render("loading..."))
+	}
+
+	// ── QUICK ACTIONS ──────────────────────────────────────────────────────
 	lines = append(lines, "", title.Render("Quick Actions"))
 	actions := []string{
-		"Start manual backup workflow",
-		"Open schedule manager",
-		"Search and edit configuration",
-		"View execution logs",
-		"View run history",
-		"Refresh health diagnostics",
-		"Inspect observability metrics",
+		"2  Start manual backup workflow",
+		"3  Open schedule manager",
+		"4  Search and edit configuration",
+		"5  View execution logs",
+		"6  View run history & validate",
+		"7  Refresh health diagnostics",
+		"8  Open observability metrics",
 	}
 	lines = append(lines, optionList(actions, m.dashboardSelected)...)
-	lines = append(lines, "", muted.Render("Monitoring guide: GRAFANA_BACKUP_MONITORING.md"))
+	lines = append(lines, "", muted.Render("r refresh   ? help   q quit"))
+
 	m.dashboardView.SetContent(strings.Join(lines, "\n"))
 	return m.dashboardView.View()
 }
@@ -271,6 +399,7 @@ func (m model) viewBackup(width int) string {
 			if m.runConfig.PreflightOnly {
 				runKind = title.Render("Preflight Result") + "\n" + statusStyled(m.runResult.Status)
 			}
+			outcome := finalRunOutcome(*m.runResult)
 			lines = append(lines,
 				runKind,
 				"Run ID: "+m.runResult.RunID,
@@ -278,8 +407,19 @@ func (m model) viewBackup(width int) string {
 				"Log File: "+m.runResult.LogFile,
 				fmt.Sprintf("Databases: %d/%d succeeded", m.runResult.DatabasesSucceeded, m.runResult.DatabasesTotal),
 			)
+			if outcome != "" {
+				lines = append(lines, "Final Outcome: "+outcome)
+			}
 			if m.runResult.FailureReason != "" {
-				lines = append(lines, "Failure: "+m.runResult.FailureReason)
+				lines = append(lines, "Failure Reason: "+m.runResult.FailureReason)
+			}
+			if m.runResult.LogicalUploadStatus != "" {
+				lines = append(lines, "Logical Upload: "+m.runResult.LogicalUploadStatus)
+			}
+			if m.runResult.LogicalUploadError != "" {
+				lines = append(lines, "Upload Error: "+m.runResult.LogicalUploadError)
+			} else if m.runResult.LogicalUploadNote != "" {
+				lines = append(lines, "Upload Note: "+m.runResult.LogicalUploadNote)
 			}
 			if m.runResult.CleanupError != "" {
 				lines = append(lines, "Cleanup: "+m.runResult.CleanupError)
@@ -289,6 +429,7 @@ func (m model) viewBackup(width int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
 
 func (m model) viewBackupStep(index int, label string) string {
 	name := strings.TrimSpace(label[2:])
@@ -482,7 +623,7 @@ func (m model) configContentLines(visible []int) ([]string, int) {
 		if field.Error != "" {
 			line += "  " + bad.Render(field.Error)
 		}
-		
+
 		// Determine full width for row styling
 		width := clampNonNegative(m.width - m.sidebarWidth() - 6)
 		if lipgloss.Width(line) < width {
@@ -599,6 +740,86 @@ func (m model) viewHistory(width int) string {
 	}
 	if len(m.history) == 0 {
 		lines = append(lines, "No runs recorded yet.")
+		return strings.Join(lines, "\n")
+	}
+	selectedRun := m.history[m.historySelected]
+	lines = append(lines, "", sectionTitle.Render("Selected Run"))
+	lines = append(lines,
+		"Run ID: "+selectedRun.RunID,
+		"Status: "+statusStyled(selectedRun.Status),
+		"Folder: "+emptyDefault(selectedRun.RunFolder, "none"),
+		"Log: "+emptyDefault(selectedRun.LogFile, "none"),
+	)
+	if selectedRun.LogicalUploadStatus != "" {
+		lines = append(lines, "Logical Upload: "+selectedRun.LogicalUploadStatus)
+	}
+	if selectedRun.LogicalUploadError != "" {
+		lines = append(lines, "Upload Error: "+selectedRun.LogicalUploadError)
+	} else if selectedRun.LogicalUploadNote != "" {
+		lines = append(lines, "Upload Note: "+selectedRun.LogicalUploadNote)
+	}
+	if outcome := finalRunOutcome(selectedRun); outcome != "" {
+		lines = append(lines, "Final Outcome: "+outcome)
+	}
+	if selectedRun.FailureReason != "" {
+		lines = append(lines, "Failure Reason: "+selectedRun.FailureReason)
+	}
+	if selectedRun.CleanupError != "" {
+		lines = append(lines, "Cleanup: "+selectedRun.CleanupError)
+	}
+	if state, ok := m.validations[selectedRun.RunID]; ok {
+		lines = append(lines, "", sectionTitle.Render("Last Validation"))
+		lines = append(lines,
+			"Mode: "+emptyDefault(state.Mode, "validation"),
+			"Checked: "+state.CheckedAt.Format(time.RFC3339),
+		)
+		switch {
+		case state.Err != "":
+			lines = append(lines, "Result: "+bad.Render("failed"), "Error: "+state.Err)
+		case state.Result.Valid:
+			lines = append(lines, "Result: "+good.Render("success"))
+		default:
+			lines = append(lines, "Result: "+bad.Render("failed"))
+			if state.Result.Error != "" {
+				lines = append(lines, "Error: "+state.Result.Error)
+			}
+		}
+		if len(state.Result.Databases) > 0 {
+			lines = append(lines, "Databases:")
+			for _, db := range state.Result.Databases {
+				dbLine := fmt.Sprintf("- %s: %s", db.Database, map[bool]string{true: "ok", false: "failed"}[db.Valid])
+				if db.Error != "" {
+					dbLine += " (" + db.Error + ")"
+				}
+				lines = append(lines, dbLine)
+			}
+		}
+	} else if selectedRun.ValidationStatus != "" {
+		lines = append(lines, "", sectionTitle.Render("Last Validation"))
+		lines = append(lines,
+			"Mode: "+emptyDefault(selectedRun.ValidationMode, "validation"),
+			"Checked: "+selectedRun.ValidationCheckedAt.Format(time.RFC3339),
+		)
+		if selectedRun.ValidationStatus == "success" {
+			lines = append(lines, "Result: "+good.Render("success"))
+		} else {
+			lines = append(lines, "Result: "+bad.Render("failed"))
+			if selectedRun.ValidationError != "" {
+				lines = append(lines, "Error: "+selectedRun.ValidationError)
+			}
+		}
+		if len(selectedRun.ValidationDatabases) > 0 {
+			lines = append(lines, "Databases:")
+			for _, db := range selectedRun.ValidationDatabases {
+				dbLine := fmt.Sprintf("- %s: %s", db.Database, map[bool]string{true: "ok", false: "failed"}[db.Valid])
+				if db.Error != "" {
+					dbLine += " (" + db.Error + ")"
+				}
+				lines = append(lines, dbLine)
+			}
+		}
+	} else {
+		lines = append(lines, "", sectionTitle.Render("Validation"), muted.Render("Use v to validate backup files or t to run a sandbox restore test for the selected run."))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -621,9 +842,16 @@ func (m model) viewHealth(width int) string {
 		"Run Index: "+m.health.RunLogPath,
 		fmt.Sprintf("Runtime User: %s (non-root=%t)", m.health.Runtime.CurrentUser, m.health.Runtime.NonRoot),
 		"Execution Source: "+m.health.Runtime.ExecutionSource,
+		"Scheduler Context: "+emptyDefault(m.health.Runtime.SchedulerContext, "unknown"),
 		"Service Unit: "+m.health.Runtime.ServiceUnitName,
 		"Timer Unit: "+m.health.Runtime.TimerUnitName,
 		fmt.Sprintf("API: enabled=%t auth=%t listen=%s", m.cfg.APIEnabled, m.cfg.APIAuthEnabled, m.cfg.APIListenAddr),
+		fmt.Sprintf("Restore Verification: restore_test=%t exact_rows=%t sample_checks=%t sample_rows=%d",
+			m.health.RestoreVerification.RestoreTestEnabled,
+			m.health.RestoreVerification.ExactRowCounts,
+			m.health.RestoreVerification.SampleDataChecks,
+			m.health.RestoreVerification.SampleDataRows,
+		),
 		"",
 		"Logical:  "+healthLine(m.health.Logical),
 		"Physical: "+healthLine(m.health.Physical),
@@ -640,6 +868,13 @@ func (m model) viewHealth(width int) string {
 	if m.health.Runtime.PotentialConflictReason != "" {
 		lines = append(lines, warn.Render("Scheduler warning: ")+m.health.Runtime.PotentialConflictReason, "")
 	}
+	if len(m.health.Runtime.AuditChecklist) > 0 {
+		lines = append(lines, sectionTitle.Render("Runtime Audit"))
+		for _, item := range m.health.Runtime.AuditChecklist {
+			lines = append(lines, "- "+item)
+		}
+		lines = append(lines, "")
+	}
 	if m.health.LatestRun == nil {
 		lines = append(lines, sectionTitle.Render("Latest Run"), "none")
 	} else {
@@ -655,8 +890,45 @@ func (m model) viewHealth(width int) string {
 			"Duration: "+r.Duration,
 			fmt.Sprintf("Databases: total=%d success=%d failed=%d", r.DatabasesTotal, r.DatabasesSucceeded, r.DatabasesFailed),
 		)
+		if r.LogicalUploadStatus != "" {
+			lines = append(lines, "Logical Upload: "+r.LogicalUploadStatus)
+		}
+		if r.LogicalUploadError != "" {
+			lines = append(lines, "Upload Error: "+r.LogicalUploadError)
+		} else if r.LogicalUploadNote != "" {
+			lines = append(lines, "Upload Note: "+r.LogicalUploadNote)
+		}
+		if r.ValidationStatus != "" {
+			lines = append(lines,
+				"Validation: "+r.ValidationStatus,
+				"Validation Mode: "+emptyDefault(r.ValidationMode, "validation"),
+				"Validation Checked: "+r.ValidationCheckedAt.Format(time.RFC3339),
+			)
+			if r.ValidationError != "" {
+				lines = append(lines, "Validation Error: "+r.ValidationError)
+			}
+		}
+		if r.AdaptiveLogicalParallel > 0 || r.AdaptivePhysicalParallel > 0 || r.AdaptiveXbcloudParallel > 0 {
+			lines = append(lines,
+				fmt.Sprintf("Adaptive Tuning: load/cpu=%.3f logical=%d physical=%d xbcloud=%d reason=%s", r.AdaptiveLoadPerCPU, r.AdaptiveLogicalParallel, r.AdaptivePhysicalParallel, r.AdaptiveXbcloudParallel, emptyDefault(r.AdaptiveTuningReason, "unknown")),
+			)
+		}
+		if outcome := finalRunOutcome(backupapp.RunResult{
+			Status:              r.Status,
+			DatabasesTotal:      r.DatabasesTotal,
+			DatabasesFailed:     r.DatabasesFailed,
+			FailureReason:       r.FailureReason,
+			CleanupError:        r.CleanupError,
+			LogicalUploadStatus: r.LogicalUploadStatus,
+			LogicalUploadError:  r.LogicalUploadError,
+		}); outcome != "" {
+			lines = append(lines, "Final Outcome: "+outcome)
+		}
 		if r.FailureReason != "" {
-			lines = append(lines, "Failure: "+r.FailureReason)
+			lines = append(lines, "Failure Reason: "+r.FailureReason)
+		}
+		if r.CleanupError != "" {
+			lines = append(lines, "Cleanup: "+r.CleanupError)
 		}
 	}
 	m.healthView.SetContent(strings.Join(lines, "\n"))
@@ -706,6 +978,11 @@ func (m model) viewObservability(width int) string {
 	activeLabels := fmt.Sprintf(`job="%s",service="%s"`, job, service)
 	if env := strings.TrimSpace(m.cfg.MetricsEnv); env != "" {
 		activeLabels += fmt.Sprintf(`,env="%s"`, env)
+	} else {
+		activeLabels += `,env="pilot"`
+	}
+	if region := strings.TrimSpace(m.cfg.MetricsRegion); region != "" {
+		activeLabels += fmt.Sprintf(`,region="%s"`, region)
 	}
 	lines = append(lines, "Prometheus Labels: {"+activeLabels+"}")
 	lines = append(lines, "", sectionTitle.Render("Parsed Metrics"))
@@ -721,6 +998,13 @@ func (m model) viewObservability(width int) string {
 		"backup_logical_last_failed_databases",
 		"backup_physical_last_status",
 		"backup_physical_last_duration_seconds",
+		"backup_adaptive_load_per_cpu",
+		"backup_adaptive_logical_parallel",
+		"backup_adaptive_xtrabackup_parallel",
+		"backup_adaptive_xbcloud_parallel",
+		"backup_physical_retry_count",
+		"backup_physical_rate_limit_retry_count",
+		"backup_logical_validation_last_status",
 		"backup_run_in_progress",
 		"backup_last_run_timestamp",
 		"backup_last_success_timestamp",

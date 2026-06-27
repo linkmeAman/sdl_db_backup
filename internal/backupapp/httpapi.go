@@ -29,6 +29,19 @@ type apiServer struct {
 	envPath string
 }
 
+type restoreStatusResponse struct {
+	LogicalValidationAvailable bool     `json:"logical_validation_available"`
+	FullRestoreValidation      bool     `json:"full_restore_validation"`
+	ExactRowCounts             bool     `json:"exact_row_counts"`
+	SampleDataChecks           bool     `json:"sample_data_checks"`
+	SampleDataRows             int      `json:"sample_data_rows"`
+	RestoreTestHost            string   `json:"restore_test_host,omitempty"`
+	RestoreTestPort            string   `json:"restore_test_port,omitempty"`
+	RestoreTestUser            string   `json:"restore_test_user,omitempty"`
+	RestoreTestPasswordSet     bool     `json:"restore_test_password_set"`
+	SupportedEndpoints         []string `json:"supported_endpoints"`
+}
+
 func RunAPIServer(ctx context.Context, envPath string) error {
 	cfg, err := loadConfigWithOverrides(envPath)
 	if err != nil {
@@ -107,7 +120,11 @@ func (s *apiServer) routePath(w http.ResponseWriter, r *http.Request, cfg config
 			writeAPIError(w, http.StatusInternalServerError, "history_failed", err.Error(), nil)
 			return
 		}
-		writeAPIData(w, http.StatusOK, runs)
+		apiRuns := make([]APIRunResult, 0, len(runs))
+		for _, run := range runs {
+			apiRuns = append(apiRuns, BuildAPIRunResult(run))
+		}
+		writeAPIData(w, http.StatusOK, apiRuns)
 	case path == "backups/runs" && r.Method == http.MethodPost:
 		var opts ManualRunOptions
 		if err := decodeJSON(r, &opts); err != nil {
@@ -125,7 +142,7 @@ func (s *apiServer) routePath(w http.ResponseWriter, r *http.Request, cfg config
 			writeAPIError(w, http.StatusInternalServerError, "backup_run_failed", err.Error(), nil)
 			return
 		}
-		writeAPIData(w, http.StatusOK, result)
+		writeAPIData(w, http.StatusOK, BuildAPIRunResult(result))
 	case strings.HasPrefix(path, "backups/runs/") && r.Method == http.MethodGet:
 		runID := strings.TrimPrefix(path, "backups/runs/")
 		run, err := ReadRunByID(cfg.RunLogPath, runID)
@@ -137,7 +154,7 @@ func (s *apiServer) routePath(w http.ResponseWriter, r *http.Request, cfg config
 			writeAPIError(w, http.StatusNotFound, "run_not_found", "run not found", nil)
 			return
 		}
-		writeAPIData(w, http.StatusOK, run)
+		writeAPIData(w, http.StatusOK, BuildAPIRunResult(*run))
 	case path == "config" && r.Method == http.MethodGet:
 		base, err := LoadConfig(s.envPath)
 		if err != nil {
@@ -239,6 +256,22 @@ func (s *apiServer) routePath(w http.ResponseWriter, r *http.Request, cfg config
 			return
 		}
 		writeAPIData(w, http.StatusOK, profile)
+	case path == "restore" && r.Method == http.MethodGet:
+		writeAPIData(w, http.StatusOK, restoreStatusResponse{
+			LogicalValidationAvailable: true,
+			FullRestoreValidation:      cfg.RestoreTestEnabled,
+			ExactRowCounts:             cfg.ExactRowCounts,
+			SampleDataChecks:           cfg.SampleDataChecks,
+			SampleDataRows:             cfg.SampleDataRows,
+			RestoreTestHost:            cfg.RestoreTestHost,
+			RestoreTestPort:            cfg.RestoreTestPort,
+			RestoreTestUser:            cfg.RestoreTestUser,
+			RestoreTestPasswordSet:     strings.TrimSpace(cfg.RestoreTestPass) != "",
+			SupportedEndpoints: []string{
+				"POST " + normalizeAPIBasePath(cfg.APIBasePath) + "/restore/validate",
+				"POST " + normalizeAPIBasePath(cfg.APIBasePath) + "/restore/test",
+			},
+		})
 	case path == "restore/validate" && r.Method == http.MethodPost:
 		var payload struct {
 			RunID string `json:"run_id"`
@@ -254,6 +287,32 @@ func (s *apiServer) routePath(w http.ResponseWriter, r *http.Request, cfg config
 		res, err := ValidateLogicalRun(cfg, payload.RunID)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "validation_failed", err.Error(), nil)
+			return
+		}
+		writeAPIData(w, http.StatusOK, res)
+	case path == "restore/test" && r.Method == http.MethodPost:
+		var payload struct {
+			RunID string `json:"run_id"`
+		}
+		if err := decodeJSON(r, &payload); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_json", err.Error(), nil)
+			return
+		}
+		if payload.RunID == "" {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "run_id is required", nil)
+			return
+		}
+		if !cfg.RestoreTestEnabled {
+			writeAPIError(w, http.StatusBadRequest, "restore_test_disabled", "restore validation is disabled in configuration", nil)
+			return
+		}
+		if strings.TrimSpace(cfg.RestoreTestHost) == "" {
+			writeAPIError(w, http.StatusBadRequest, "restore_test_not_configured", "RESTORE_TEST_HOST is not configured", nil)
+			return
+		}
+		res, err := FullRestoreValidation(cfg, payload.RunID, nil)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "restore_test_failed", err.Error(), nil)
 			return
 		}
 		writeAPIData(w, http.StatusOK, res)

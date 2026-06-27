@@ -17,7 +17,7 @@
     },
     "/api/v1/backups/runs": {
       "get": {
-        "summary": "List backup runs",
+        "summary": "List backup runs with derived final_outcome",
         "responses": {
           "200": {
             "description": "OK"
@@ -25,7 +25,7 @@
         }
       },
       "post": {
-        "summary": "Create a manual backup run",
+        "summary": "Create a manual backup run and return derived final_outcome",
         "responses": {
           "200": {
             "description": "OK"
@@ -35,7 +35,7 @@
     },
     "/api/v1/backups/runs/{run_id}": {
       "get": {
-        "summary": "Get one backup run",
+        "summary": "Get one backup run with derived final_outcome",
         "parameters": [
           {
             "name": "run_id",
@@ -182,10 +182,62 @@
     },
     "/api/v1/restore": {
       "get": {
-        "summary": "Restore capability status",
+        "summary": "Restore validation capability status",
         "responses": {
-          "501": {
-            "description": "Not implemented"
+          "200": {
+            "description": "Restore validation capability summary"
+          }
+        }
+      }
+    },
+    "/api/v1/restore/validate": {
+      "post": {
+        "summary": "Validate a logical backup run without restoring it",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["run_id"],
+                "properties": {
+                  "run_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result"
+          }
+        }
+      }
+    },
+    "/api/v1/restore/test": {
+      "post": {
+        "summary": "Run a full sandbox restore test for a logical backup run",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["run_id"],
+                "properties": {
+                  "run_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sandbox restore validation result"
           }
         }
       }

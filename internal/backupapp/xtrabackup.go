@@ -14,6 +14,17 @@ import (
 	"time"
 )
 
+func isPhysicalUploadRateLimited(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "please reduce your request rate") ||
+		strings.Contains(lower, "slow down") ||
+		strings.Contains(lower, "throttl") ||
+		strings.Contains(lower, "rate exceeded")
+}
+
 func runXtrabackupCmd(bin string, args []string, runAsUser string) error {
 	var cmd *exec.Cmd
 	if runAsUser != "" {
@@ -159,6 +170,73 @@ func checkXtrabackupPrivileges(cfg config) error {
 // runPhysicalBackup streams xtrabackup directly to S3 via xbcloud.
 // No local physical directory is created.
 func runPhysicalBackup(cfg config, runDir string) physicalBackupResult {
+	maxAttempts := cfg.RetryCount
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	started := time.Now()
+	rateLimitRetries := 0
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		elapsed := time.Since(started)
+		remaining := cfg.PhysicalTimeout - elapsed
+		if remaining <= 0 {
+			return physicalBackupResult{
+				Status:    "failed",
+				TargetDir: "",
+				Duration:  elapsed.Round(time.Millisecond).String(),
+				Error:     fmt.Sprintf("physical backup timed out after %s", cfg.PhysicalTimeout),
+			}
+		}
+
+		attemptCfg := cfg
+		attemptCfg.PhysicalTimeout = remaining
+		profile := buildAdaptiveResourceProfile(cfg, attempt-1)
+		attemptCfg.XtrabackupParallel = profile.XtrabackupParallel
+		attemptCfg.XbcloudParallel = profile.XbcloudParallel
+		log.Printf(
+			"physical backup attempt=%d/%d xtrabackup_parallel=%d xbcloud_parallel=%d reason=%s",
+			attempt,
+			maxAttempts,
+			profile.XtrabackupParallel,
+			profile.XbcloudParallel,
+			profile.TuningReason,
+		)
+
+		result := runPhysicalBackupAttempt(attemptCfg, runDir)
+		result.Attempts = attempt
+		result.XtrabackupParallel = profile.XtrabackupParallel
+		result.XbcloudParallel = profile.XbcloudParallel
+		result.RateLimitRetries = rateLimitRetries
+		if result.Status == "success" {
+			return result
+		}
+		if attempt == maxAttempts || !isPhysicalUploadRateLimited(result.Error) {
+			return result
+		}
+
+		rateLimitRetries++
+		result.RateLimitRetries = rateLimitRetries
+		delay := retryDelay(cfg, attempt)
+		if delay >= remaining {
+			return result
+		}
+		log.Printf(
+			"physical backup: xbcloud/S3 rate limited attempt=%d/%d; retrying in %s with lower parallelism",
+			attempt,
+			maxAttempts,
+			delay,
+		)
+		time.Sleep(delay)
+	}
+
+	return physicalBackupResult{
+		Status:   "failed",
+		Duration: time.Since(started).Round(time.Millisecond).String(),
+		Error:    "physical backup failed without producing a final result",
+	}
+}
+
+func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 	started := time.Now()
 	result := physicalBackupResult{Status: "failed"}
 	runID := filepath.Base(runDir)
@@ -212,7 +290,7 @@ func runPhysicalBackup(cfg config, runDir string) physicalBackupResult {
 		"--backup",
 		"--stream=xbstream",
 		"--user=" + cfg.XtrabackupUser,
-		"--parallel=" + strconv.Itoa(cfg.XtrabackupParallel),
+		"--parallel=" + strconv.Itoa(normalizedPhysicalParallelism(cfg.XtrabackupParallel)),
 	}
 	if cfg.XtrabackupSocket != "" {
 		backupArgs = append(backupArgs, "--socket="+cfg.XtrabackupSocket)
@@ -252,6 +330,8 @@ func runPhysicalBackup(cfg config, runDir string) physicalBackupResult {
 		"--storage=s3",
 		"--s3-bucket=" + cfg.S3Bucket,
 		"--s3-region=" + cfg.S3Region,
+		"--parallel=" + strconv.Itoa(normalizedXbcloudParallelism(cfg.XbcloudParallel)),
+		"--fifo-streams=" + strconv.Itoa(normalizedXbcloudFIFOStreams(cfg.XbcloudFIFOStreams, cfg.XbcloudParallel)),
 		objectKey,
 	}
 	xbcloudCmd := exec.CommandContext(ctx, xbcloudBin, xbcloudArgs...)
@@ -270,7 +350,13 @@ func runPhysicalBackup(cfg config, runDir string) physicalBackupResult {
 	}
 
 	log.Printf("physical backup: using working directory %s", workDir)
-	log.Printf("physical backup: streaming directly to s3://%s/%s", cfg.S3Bucket, objectKey)
+	log.Printf(
+		"physical backup: streaming directly to s3://%s/%s xbcloud_parallel=%d fifo_streams=%d",
+		cfg.S3Bucket,
+		objectKey,
+		normalizedXbcloudParallelism(cfg.XbcloudParallel),
+		normalizedXbcloudFIFOStreams(cfg.XbcloudFIFOStreams, cfg.XbcloudParallel),
+	)
 
 	if err := xtrabackupCmd.Start(); err != nil {
 		result.Error = fmt.Sprintf("start xtrabackup: %v", err)

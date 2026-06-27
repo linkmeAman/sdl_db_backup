@@ -1,0 +1,17 @@
+# Prometheus scrape example for SDL DB Backup metrics
+#
+# Node Exporter must be started with:
+#   --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+#
+# The backup runner writes:
+#   /var/lib/node_exporter/textfile_collector/sdl_db_backup.prom
+#
+# Prometheus only needs to scrape Node Exporter. Node Exporter reads the textfile
+# collector directory and exposes these backup metrics on its /metrics endpoint.
+
+scrape_configs:
+  - job_name: node_exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100
+

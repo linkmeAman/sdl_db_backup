@@ -28,6 +28,7 @@ type RuntimeProfile struct {
 	APIServerEnabled        bool     `json:"api_server_enabled"`
 	APIServerListenAddr     string   `json:"api_server_listen_addr"`
 	APIAuthEnabled          bool     `json:"api_auth_enabled"`
+	SchedulerContext        string   `json:"scheduler_context"`
 	SchedulerGuidance       string   `json:"scheduler_guidance"`
 	PotentialConflictReason string   `json:"potential_conflict_reason,omitempty"`
 	AuditChecklist          []string `json:"audit_checklist"`
@@ -87,6 +88,22 @@ func runtimeAuditChecklist() []string {
 	}
 }
 
+func schedulerContext(currentUser string, executionSource string) string {
+	source := normalizedExecutionSource(executionSource)
+	switch {
+	case source == "runner" && strings.TrimSpace(currentUser) == "root":
+		return "root scheduled runner (blocked)"
+	case source == "runner":
+		return "user-level scheduled runner"
+	case source == "tui":
+		return "interactive TUI/manual invocation"
+	case source == "api":
+		return "API-triggered invocation"
+	default:
+		return source + " invocation"
+	}
+}
+
 func GetRuntimeProfile(envPath string) (RuntimeProfile, error) {
 	cfg, err := loadConfigWithOverrides(envPath)
 	if err != nil {
@@ -109,6 +126,7 @@ func GetRuntimeProfile(envPath string) (RuntimeProfile, error) {
 		APIServerEnabled:    cfg.APIEnabled,
 		APIServerListenAddr: cfg.APIListenAddr,
 		APIAuthEnabled:      cfg.APIAuthEnabled,
+		SchedulerContext:    schedulerContext(currentOSUser(), cfg.ExecutionSource),
 		SchedulerGuidance:   "Use only a user-level systemd timer/service for scheduled runs. Manual shell and alternate runner paths should not be scheduled.",
 		AuditChecklist:      runtimeAuditChecklist(),
 	}
@@ -249,10 +267,7 @@ func RenderUserSystemdUnits(envPath string) (ServiceRenderResult, error) {
 		"Description=Run SDL DB backup scheduler",
 		"",
 		"[Timer]",
-		"OnCalendar=*-*-* 00:00:00",
-		"OnCalendar=*-*-* 06:00:00",
-		"OnCalendar=*-*-* 12:00:00",
-		"OnCalendar=*-*-* 18:00:00",
+		"OnCalendar=hourly",
 		"Persistent=true",
 		"AccuracySec=1min",
 		"Unit=" + cfg.ServiceUnitName,

@@ -1,0 +1,9 @@
+apiVersion: 1
+datasources:
+- name: SDL DB Backup Loki
+  type: loki
+  access: proxy
+  url: http://localhost:3100
+  isDefault: false
+  editable: true
+  uid: sdl-db-backup-loki

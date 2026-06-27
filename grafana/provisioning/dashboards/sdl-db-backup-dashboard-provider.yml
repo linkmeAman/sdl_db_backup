@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: sdl-db-backup
+    orgId: 1
+    folder: SDL DB Backup
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards/sdl-db-backup
+

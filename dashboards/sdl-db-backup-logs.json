@@ -1,0 +1,196 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_LOKI",
+      "label": "Loki",
+      "description": "Loki datasource for SDL DB backup log streaming",
+      "type": "datasource",
+      "pluginId": "loki",
+      "pluginName": "Loki"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "logs",
+      "name": "Logs",
+      "version": ""
+    },
+    {
+      "type": "datasource",
+      "id": "loki",
+      "name": "Loki",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        }
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sdl-db-backup-loki"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Ascending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "sdl-db-backup-loki"
+          },
+          "editorMode": "code",
+          "expr": "{job=\"$job\",service=\"$service\",env=\"$env\",log_kind=\"run\"} |~ \"mysql full backup started|run log file:|daily log file:|logical backup:|physical backup:|backup folder:|discovering databases|found [0-9]+ databases|processing |starting dump|completed dump|deleting old backup folder|cleanup warning|backup summary|backup failure reason|s3 upload|metrics write failed\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Backup Lifecycle Events",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sdl-db-backup-loki"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "id": 2,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Ascending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "sdl-db-backup-loki"
+          },
+          "editorMode": "code",
+          "expr": "{job=\"$job\",service=\"$service\",env=\"$env\",log_kind=\"run\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Full Per-Run Backup Log",
+      "type": "logs"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "backup",
+    "mysql",
+    "loki",
+    "logs"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "sdl_db_backup",
+          "value": "sdl_db_backup"
+        },
+        "hide": 0,
+        "label": "job",
+        "name": "job",
+        "query": "sdl_db_backup",
+        "skipUrlSync": false,
+        "type": "constant"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "mysql",
+          "value": "mysql"
+        },
+        "hide": 0,
+        "label": "service",
+        "name": "service",
+        "query": "mysql",
+        "skipUrlSync": false,
+        "type": "constant"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "pilot",
+          "value": "pilot"
+        },
+        "hide": 0,
+        "label": "env",
+        "name": "env",
+        "query": "pilot",
+        "skipUrlSync": false,
+        "type": "constant"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SDL DB Backup Logs",
+  "uid": "sdl-db-backup-logs",
+  "version": 1,
+  "weekStart": ""
+}

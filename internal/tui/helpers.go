@@ -290,21 +290,32 @@ func (p *runProgressState) applyLogLine(line string) {
 		p.currentStage = "discovered databases"
 		return
 	}
-	if current, total, db, ok := parseProcessingDatabase(line); ok {
-		p.current = current
+	if _, total, _, ok := parseProcessingDatabase(line); ok {
+		// Only update total from processing lines, ignore currentDB/current because
+		// they are emitted all at once in batch at the start.
 		if total > 0 {
 			p.total = total
 		}
+		return
+	}
+	if strings.Contains(line, "starting dump for database=") {
+		idx := strings.Index(line, "starting dump for database=")
+		db := strings.TrimSpace(line[idx+len("starting dump for database="):])
 		p.currentDB = db
 		p.currentStage = "dumping " + db
+		p.current = p.completed + 1
+		if p.current > p.total && p.total > 0 {
+			p.current = p.total
+		}
 		return
 	}
 	if db, ok := parseCompletedDump(line); ok {
-		if p.currentDB == "" || p.currentDB == db {
-			p.completed++
-			if p.current < p.completed {
-				p.current = p.completed
-			}
+		p.completed++
+		if p.total > 0 && p.completed > p.total {
+			p.completed = p.total
+		}
+		if p.current < p.completed {
+			p.current = p.completed
 		}
 		p.currentStage = "completed " + db
 		return
@@ -478,6 +489,11 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 		c.LogicalTables = parseTUITableScope(v)
 	})
 	addDuration("Logical", "BACKUP_LOGICAL_TIMEOUT_PER_DB", "Logical Timeout", cfg.LogicalTimeoutPerDB, func(c *backupapp.Config, v time.Duration) { c.LogicalTimeoutPerDB = v })
+	addBool("Logical", "BACKUP_EXACT_ROW_COUNTS", "Exact Row Counts", cfg.ExactRowCounts, func(c *backupapp.Config, v bool) { c.ExactRowCounts = v })
+	addBool("Logical", "BACKUP_SAMPLE_DATA_CHECKS", "Sample Data Checks", cfg.SampleDataChecks, func(c *backupapp.Config, v bool) { c.SampleDataChecks = v })
+	addInt("Logical", "BACKUP_SAMPLE_DATA_ROWS", "Sample Data Rows", cfg.SampleDataRows, func(c *backupapp.Config, v int) { c.SampleDataRows = max(1, v) })
+	addInt("Logical", "BACKUP_LOGICAL_PARALLEL", "Logical Parallel", cfg.LogicalParallel, func(c *backupapp.Config, v int) { c.LogicalParallel = v })
+	addInt("Logical", "BACKUP_LOGICAL_GZIP_LEVEL", "Logical Gzip Level", cfg.LogicalGzipLevel, func(c *backupapp.Config, v int) { c.LogicalGzipLevel = v })
 	addBool("Logical", "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", "Logical Upload", cfg.LogicalS3UploadEnabled, func(c *backupapp.Config, v bool) { c.LogicalS3UploadEnabled = v })
 
 	addBool("Physical", "BACKUP_PHYSICAL_ENABLED", "Physical Enabled", cfg.PhysicalEnabled, func(c *backupapp.Config, v bool) { c.PhysicalEnabled = v })
@@ -486,6 +502,8 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 	addBool("Physical", "BACKUP_PHYSICAL_S3_UPLOAD_ENABLED", "Physical Upload", cfg.PhysicalS3UploadEnabled, func(c *backupapp.Config, v bool) { c.PhysicalS3UploadEnabled = v })
 	addString("Physical", "BACKUP_XTRABACKUP_BIN", "xtrabackup Bin", cfg.XtrabackupBin, false, func(c *backupapp.Config, v string) { c.XtrabackupBin = v })
 	addString("Physical", "BACKUP_XBCLOUD_BIN", "xbcloud Bin", cfg.XbcloudBin, false, func(c *backupapp.Config, v string) { c.XbcloudBin = v })
+	addInt("Physical", "BACKUP_XBCLOUD_PARALLEL", "xbcloud Parallel", cfg.XbcloudParallel, func(c *backupapp.Config, v int) { c.XbcloudParallel = v })
+	addInt("Physical", "BACKUP_XBCLOUD_FIFO_STREAMS", "xbcloud FIFO Streams", cfg.XbcloudFIFOStreams, func(c *backupapp.Config, v int) { c.XbcloudFIFOStreams = v })
 	addInt("Physical", "BACKUP_XTRABACKUP_PARALLEL", "xtrabackup Parallel", cfg.XtrabackupParallel, func(c *backupapp.Config, v int) { c.XtrabackupParallel = v })
 	addString("Physical", "BACKUP_XTRABACKUP_USER", "xtrabackup User", cfg.XtrabackupUser, false, func(c *backupapp.Config, v string) { c.XtrabackupUser = v })
 	addString("Physical", "BACKUP_XTRABACKUP_PASS", "xtrabackup Pass", cfg.XtrabackupPass, true, func(c *backupapp.Config, v string) { c.XtrabackupPass = v })
@@ -618,11 +636,15 @@ func healthLine(check backupapp.HealthCheck) string {
 	return statusStyled(check.Status) + " - " + check.Message
 }
 
+func finalRunOutcome(r backupapp.RunResult) string {
+	return backupapp.DeriveFinalOutcome(r.Status, r.DatabasesTotal, r.DatabasesFailed, r.FailureReason, r.CleanupError, r.LogicalUploadError)
+}
+
 func statusStyled(status string) string {
 	switch status {
 	case "ok", "success":
 		return good.Render("✔ " + status)
-	case "disabled", "partial":
+	case "disabled", "partial", "warn", "warning":
 		return warn.Render("⚠ " + status)
 	default:
 		return bad.Render("✖ " + emptyDefault(status, "unknown"))
