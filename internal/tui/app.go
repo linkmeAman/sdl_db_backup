@@ -67,10 +67,10 @@ type configField struct {
 }
 
 type model struct {
-	envPath string
-	cfg     backupapp.Config
-	draft   backupapp.Config
-	dirty   bool
+	envPath  string
+	cfg      backupapp.Config
+	draft    backupapp.Config
+	dirty    bool
 	quitting bool
 
 	width  int
@@ -80,15 +80,16 @@ type model struct {
 	sidebarSelected int
 	focus           focusRegion
 
-	health       backupapp.HealthReport
-	healthLoaded bool
-	healthErr    string
-	systemd      backupapp.UnitStatus
-	systemdErr   string
-	systemdLast  string
+	health          backupapp.HealthReport
+	healthLoaded    bool
+	healthErr       string
+	systemd         backupapp.UnitStatus
+	systemdErr      string
+	systemdLast     string
 	history         []backupapp.RunResult
 	historySelected int
-	historyErr   string
+	historyErr      string
+	validations     map[string]runValidationState
 
 	fields         []configField
 	configSelected int
@@ -135,6 +136,7 @@ type model struct {
 	runPreview          backupapp.Preview
 	runConfig           backupapp.Config
 	running             bool
+	runStartedAt        time.Time
 	runResult           *backupapp.RunResult
 	runErr              string
 	runLogLines         []string
@@ -185,7 +187,15 @@ type historyMsg struct {
 	err  error
 }
 
+type runValidationState struct {
+	Mode      string
+	Result    backupapp.LogicalValidationResult
+	Err       string
+	CheckedAt time.Time
+}
+
 type validationMsg struct {
+	mode   string
 	result backupapp.LogicalValidationResult
 	err    error
 }
@@ -224,6 +234,13 @@ type startBackupMsg struct {
 }
 
 type tickToastMsg time.Time
+type tickLiveMsg time.Time
+
+func tickLive() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickLiveMsg(t)
+	})
+}
 
 func tickToast() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -464,12 +481,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case validationMsg:
+		if m.validations == nil {
+			m.validations = map[string]runValidationState{}
+		}
+		state := runValidationState{
+			Mode:      msg.mode,
+			Result:    msg.result,
+			CheckedAt: time.Now(),
+		}
 		if msg.err != nil {
+			state.Err = msg.err.Error()
+			if strings.TrimSpace(msg.result.RunID) != "" {
+				m.validations[msg.result.RunID] = state
+			}
 			m.pushToast("error", "validation failed: "+msg.err.Error())
 		} else if !msg.result.Valid {
-			m.pushToast("error", "validation failed: "+msg.result.Error)
+			if strings.TrimSpace(msg.result.RunID) != "" {
+				m.validations[msg.result.RunID] = state
+			}
+			failure := strings.TrimSpace(msg.result.Error)
+			if failure == "" {
+				failure = "one or more databases failed validation"
+			}
+			m.pushToast("error", "validation failed: "+failure)
 		} else {
+			m.validations[msg.result.RunID] = state
 			m.pushToast("ok", "run "+msg.result.RunID+" validated successfully ("+strconv.Itoa(len(msg.result.Databases))+" DBs)")
+		}
+		for i := range m.history {
+			if m.history[i].RunID != msg.result.RunID {
+				continue
+			}
+			m.history[i].ValidationCheckedAt = state.CheckedAt
+			m.history[i].ValidationMode = state.Mode
+			m.history[i].ValidationDatabases = append([]backupapp.DatabaseValidationResult(nil), msg.result.Databases...)
+			if msg.err != nil {
+				m.history[i].ValidationStatus = "failed"
+				m.history[i].ValidationError = msg.err.Error()
+			} else if msg.result.Valid {
+				m.history[i].ValidationStatus = "success"
+				m.history[i].ValidationError = ""
+			} else {
+				m.history[i].ValidationStatus = "failed"
+				if msg.result.Error != "" {
+					m.history[i].ValidationError = msg.result.Error
+				} else {
+					m.history[i].ValidationError = "one or more databases failed validation"
+				}
+			}
+			break
 		}
 	case scopeDatabasesMsg:
 		m.scopeLoading = false
@@ -588,8 +648,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, loadTemporaryOverrides(m.envPath), loadHealth(m.envPath))
 		}
+	case tickLiveMsg:
+		// Re-schedule tick while backup is running to keep elapsed timer live
+		if m.running {
+			cmds = append(cmds, tickLive())
+		}
 	case startBackupMsg:
 		m.running = true
+		m.runStartedAt = time.Now()
 		m.backupStep = stepRunning
 		m.activeScreen = screenBackup
 		m.sidebarSelected = int(screenBackup)
@@ -600,7 +666,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runLogView.SetContent("")
 		ch := make(chan string, 256)
 		m.runLogCh = ch
-		cmds = append(cmds, waitForRunLog(ch), runBackup(msg.cfg, ch))
+		cmds = append(cmds, waitForRunLog(ch), runBackup(msg.cfg, ch), tickLive())
 	case systemdActionMsg:
 		if msg.err != nil {
 			m.systemdLast = msg.action + " failed: " + msg.err.Error()
@@ -613,7 +679,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	wasCommandOpen := m.commandOpen
-	
+
 	if key, ok := msg.(tea.KeyMsg); ok {
 		updated, keyCmd := m.handleKey(key)
 		m = updated

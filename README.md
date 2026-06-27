@@ -21,7 +21,7 @@ Core behavior:
 - Records structured run history in `backup-runs.jsonl`.
 
 If you need implementation history or change tracking, see `CHANGES.md`.
-For Prometheus/Grafana monitoring details, see [GRAFANA_BACKUP_MONITORING.md](/var/www/go-workspace/sdl/sdl_db_backup/GRAFANA_BACKUP_MONITORING.md).
+For Prometheus/Grafana monitoring details, full metric definitions, ready-to-paste PromQL selectors, dashboard layout guidance, and alert examples, see [GRAFANA_BACKUP_MONITORING.md](/var/www/go-workspace/sdl/sdl_db_backup/GRAFANA_BACKUP_MONITORING.md).
 
 ## Files
 
@@ -37,11 +37,18 @@ For Prometheus/Grafana monitoring details, see [GRAFANA_BACKUP_MONITORING.md](/v
 - `internal/tui/cmds.go`: async command helpers and loaders
 - `internal/tui/helpers.go`: backup/schedule/systemd helpers and shared TUI utilities
 - `cmd/sdl-db-backup-health/main.go`: CLI health check for latest run, daily log path, and prerequisites
+- `cmd/sdl-db-backup-validate/main.go`: CLI logical validation and sandbox restore-test runner for previous backups
 - `cmd/sdl-db-backup-api/main.go`: REST API server
 - `mysql_full_backup.sh`: bash backup script
 - `.env.example`: environment template
 - `sdl-db-backup.service`: portable unit template
 - `sdl-db-backup.timer`: portable timer template
+- `dashboards/sdl-db-backup-observability.json`: importable Grafana dashboard template for backup observability
+- `dashboards/sdl-db-backup-logs.json`: importable Grafana logs dashboard for live backup log streaming through Loki
+- `prometheus/sdl-db-backup-alerts.yml`: importable Prometheus alert rules for backup failures, stale success, stuck runs, and observability issues
+- `observability/README.md`: one-page bundle index for the dashboard, alert rules, and metric guide
+- `loki/promtail-config.yml`: sample Promtail config for shipping per-run backup logs to Loki
+- `loki/README.md`: Loki and Promtail notes for Grafana log streaming
 - `openapi.json`: machine-readable API route inventory
 
 ## Setup (No Root)
@@ -78,6 +85,7 @@ If you prefer to set up the system manually without the automated installer:
    - `./scripts/run-main`
    - TUI: `./scripts/tui`
    - Health: `go run ./cmd/sdl-db-backup-health`
+   - Validation: `go run ./cmd/sdl-db-backup-validate --mode logical`
    - API: `go run ./cmd/sdl-db-backup-api`
 
 4. Ensure `go` is available to the service user:
@@ -107,6 +115,8 @@ Logical backup settings:
 - `BACKUP_LOGICAL_DATABASES=db1,db2` or empty for all granted non-system databases
 - `BACKUP_LOGICAL_TABLES=db1:table_a,table_b;db2:table_c` or empty for all validated tables/views
 - `BACKUP_LOGICAL_TIMEOUT_PER_DB=30m`
+- `BACKUP_LOGICAL_PARALLEL=2` controls how many logical databases are dumped concurrently
+- `BACKUP_LOGICAL_GZIP_LEVEL=1` controls gzip speed vs size for logical `.sql.gz` files (`1` fastest, `9` smallest, `0` no compression)
 - `BACKUP_LOGICAL_S3_UPLOAD_ENABLED=true|false`
 - `DB_ENGINE=mysql|postgres`
 - `DB_USER` and `DB_PASS` are used for logical backups (`mysql` / `mysqldump` or `pg_dump`) and should point to a dedicated backup-only user
@@ -149,9 +159,20 @@ API settings:
 Notes:
 - Logical backup upload and physical backup upload are separate. Logical upload is controlled by `BACKUP_LOGICAL_S3_UPLOAD_ENABLED`. Physical upload is controlled by `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`.
 - After each run, the runner writes Prometheus textfile metrics to `BACKUP_METRICS_FILE` or `/var/lib/node_exporter/textfile_collector/sdl_db_backup.prom` by default for Node Exporter textfile collection.
+- The default Prometheus label set is `job="sdl_db_backup", service="mysql", env="pilot"`. Override with `BACKUP_METRICS_JOB`, `BACKUP_METRICS_SERVICE`, `BACKUP_METRICS_ENV`, and optionally `BACKUP_METRICS_REGION`.
+- If the metrics are scraped through Node Exporter textfile collector, Prometheus will expose the sample label as `exported_job` instead of `job` because `job` is reserved for the scrape target. Use `exported_job="sdl_db_backup"` in Grafana and alert queries in that setup.
 - While a backup is running, the same metrics file is refreshed periodically so Prometheus/Grafana can show live run state via `backup_run_in_progress`, `backup_current_run_start_timestamp`, `backup_current_run_duration_seconds`, and `backup_metrics_last_update_timestamp`.
+- The `.prom` file contains metrics only, not runtime log lines. If you want the actual backup logs in Grafana, ship `BACKUP_LOG_DIR/*_*.log` to Loki with `loki/promtail-config.yml` and import `dashboards/sdl-db-backup-logs.json`.
+- For a copy/paste setup, see `loki/README.md` for the exact Promtail, Grafana provisioning, and log-permission commands.
 - The metrics file also separates logical and physical outcome via `backup_logical_last_attempted`, `backup_logical_last_status`, `backup_physical_last_attempted`, and `backup_physical_last_status` so Grafana can distinguish a logical success from a physical failure.
 - Additional Grafana-facing metrics include `backup_metrics_write_success`, `backup_cleanup_success`, `backup_last_cleanup_timestamp`, `backup_logical_last_total_databases`, `backup_logical_last_succeeded_databases`, `backup_logical_last_failed_databases`, and `backup_physical_last_duration_seconds`.
+- Adaptive tuning and retry metrics include `backup_adaptive_load_per_cpu`, `backup_adaptive_logical_parallel`, `backup_adaptive_xtrabackup_parallel`, `backup_adaptive_xbcloud_parallel`, `backup_physical_retry_count`, and `backup_physical_rate_limit_retry_count`.
+- [GRAFANA_BACKUP_MONITORING.md](./GRAFANA_BACKUP_MONITORING.md) includes dashboard queries plus copy-pasteable Prometheus alert rules for overall failure, logical failure, physical failure, upload failure, metrics-write failure, cleanup failure, validation failure, stuck runs, and stale-success detection.
+- Logical backup performance is tuned for speed by default with `BACKUP_LOGICAL_PARALLEL=2` and `BACKUP_LOGICAL_GZIP_LEVEL=1`. Increase parallelism carefully if the database host has spare CPU and I/O.
+- The runner now adapts logical and physical parallelism to current host load. Under higher load it reduces pressure automatically; on quieter multi-core hosts it can use a little more concurrency than the static baseline for faster completion.
+- Physical S3 streaming can now be capped explicitly with `BACKUP_XBCLOUD_PARALLEL` and `BACKUP_XBCLOUD_FIFO_STREAMS`, and throttled retries reduce `xbcloud` upload concurrency automatically.
+- `BACKUP_EXACT_ROW_COUNTS=true` enables slower but stronger logical backup manifests by running exact `COUNT(*)` across every base table and storing both per-table and total row counts. When present, sandbox restore validation will enforce exact restored row totals in addition to schema checks.
+- `BACKUP_SAMPLE_DATA_CHECKS=true` enables bounded content verification by hashing the first `BACKUP_SAMPLE_DATA_ROWS` rows of each base table that has a primary key, ordered by that key. This is cheaper than a full data diff and gives stronger restore confidence for representative content.
 - `BACKUP_S3_UPLOAD_MODE=direct` uploads logical backup files from Go directly to S3 using `BACKUP_S3_KEY_ID` and `BACKUP_S3_KEY_SECRET`. `php` uses `BACKUP_S3_UPLOAD_SCRIPT`, `http` uses `BACKUP_S3_UPLOAD_URL`, and `auto` tries direct upload before falling back to PHP/HTTP.
 - The built-in API is disabled by default. Set `BACKUP_API_ENABLED=true` before starting `cmd/sdl-db-backup-api`.
 - API bearer auth is also disabled by default. When `BACKUP_API_AUTH_ENABLED=true`, every request must send `Authorization: Bearer <BACKUP_API_BEARER_TOKEN>`.
@@ -168,6 +189,7 @@ Notes:
 - The physical backup MySQL user needs these grants: `BACKUP_ADMIN`, `PROCESS`, `RELOAD`, `LOCK TABLES`, `REPLICATION CLIENT`, plus `SELECT` on `performance_schema.replication_group_members` and `performance_schema.keyring_component_status` when those tables exist.
 - `daily` supports one or more fixed clock times. Example: `daily@00:00,06:00,12:00,18:00`.
 - Schedule state is tracked in `logs/backup-schedule-state.json`, so `daily`, `weekly`, and `interval` runs are evaluated separately for logical and physical backups.
+- If a `daily@...` or `weekly@...` slot is missed because the host or timer was down, the next runner start now catches up that missed slot instead of silently waiting for the next future slot.
 - The systemd timer must run often enough for the schedule you choose. If you want very specific execution times, adjust `sdl-db-backup.timer` so it invokes the service at or before those times.
 - The service unit now uses `TimeoutStartSec=0`, so application-level env timeouts control the run length.
 - Runtime logs are written to both the per-run log file and the daily aggregate log in `BACKUP_LOG_DIR`.
@@ -229,7 +251,7 @@ The TUI provides:
 - multi-step manual backup workflow with preview + confirmation
 - live backup logs and final summary during manual runs
 - log viewer for daily logs and the run index
-- run history from `backup-runs.jsonl`
+- run history from `backup-runs.jsonl`, including selected-run upload state plus the latest logical validation or sandbox restore-test result
 - Health page for latest run status, runtime metadata, scheduler guidance, and logical/physical prerequisite checks
 - Observability page for metrics-path state, last metrics write result, and parsed `.prom` values
 - Systemd page for user service/timer actions and rendered unit previews
@@ -255,6 +277,7 @@ go build -o sdl-db-backup-tui ./cmd/sdl-db-backup-tui
 ### TUI Pages
 
 - `Dashboard`: latest run, health cards, runtime/API status, and quick actions
+- `Dashboard`: latest run, latest persisted validation/test summary, health cards, runtime/API status, and quick actions
 - `Backup`: multi-step manual backup workflow
 - `Schedule`: change backup timing permanently or temporarily
 - `Config`: searchable editor for `.env` values used by the backup service
@@ -378,6 +401,36 @@ Manual run notes:
 - `.env` is not rewritten unless you explicitly save from `Config`
 - `local only` disables uploads for that run
 - `preflight only` validates MySQL connectivity, directory permissions, metrics-path writability, and upload prerequisites without creating backups
+- health checks also flag ownership drift in backup and log directories so old root-owned leftovers are easier to spot before cleanup fails
+
+### Logical Backup Performance
+
+The safest speed improvements in this repo are:
+
+- `BACKUP_LOGICAL_GZIP_LEVEL=1`
+  - keeps the same `.sql.gz` output format but reduces CPU time noticeably
+- `BACKUP_LOGICAL_PARALLEL=2`
+  - runs up to two logical database dumps concurrently
+- `BACKUP_XTRABACKUP_PARALLEL`
+  - already controls physical backup parallelism for `xtrabackup`
+- `BACKUP_XBCLOUD_PARALLEL`
+  - controls concurrent `xbcloud` chunk uploads during physical S3 streaming
+- `BACKUP_XBCLOUD_FIFO_STREAMS`
+  - controls `xbcloud` fifo reader concurrency; keep this modest, usually `1`
+- adaptive resource tuning
+  - reduces logical and physical concurrency automatically when the server is already busy
+  - can increase concurrency slightly on quieter hosts within CPU limits
+- physical upload retry on S3 throttling
+  - retries `xbcloud`/S3 throttling failures such as `Please reduce your request rate`
+  - each retry backs off and lowers both `xtrabackup` and `xbcloud` parallelism
+
+Recommended starting values:
+
+- smaller MySQL host: `BACKUP_LOGICAL_PARALLEL=1`
+- balanced/default: `BACKUP_LOGICAL_PARALLEL=2`
+- larger host with spare I/O: `BACKUP_LOGICAL_PARALLEL=3`
+
+Do not raise logical parallelism aggressively unless you have confirmed the database server, disk, and network can absorb the extra load.
 - physical backup is skipped in `local only` mode because physical backup currently supports direct S3 streaming only
 - database/table selection applies to logical backups only
 - no database selected means all granted databases
@@ -584,7 +637,9 @@ Key routes:
 - `GET /api/v1/logs/runs`
 - `GET /api/v1/storage`
 - `GET /api/v1/runtime`
-- `GET /api/v1/restore` returns not implemented in this version
+- `GET /api/v1/restore`
+- `POST /api/v1/restore/validate`
+- `POST /api/v1/restore/test`
 
 See `openapi.json` for the machine-readable contract.
 
@@ -595,6 +650,28 @@ curl \
   -H "Authorization: Bearer $BACKUP_API_BEARER_TOKEN" \
   http://127.0.0.1:8086/api/v1/backups/health
 ```
+
+The health API and `cmd/sdl-db-backup-health` output now include the latest run's derived `FinalOutcome` so external tooling can distinguish upload failures, partial database failures, cleanup-only issues, and early aborts without re-implementing that logic.
+The run-history APIs now include `final_outcome` on each returned run object for the same reason.
+The health report, TUI health screen, and `cmd/sdl-db-backup-health` output also surface the configured restore-verification profile so operators can see whether restore checks are schema-only, exact-row, or sampled-content aware.
+
+Restore validation routes:
+
+- `GET /api/v1/restore` returns whether logical validation is available, whether full sandbox restore testing is enabled, which restore-verification depth is configured (`exact_row_counts`, `sample_data_checks`, `sample_data_rows`), and which restore endpoints are supported
+- `POST /api/v1/restore/validate` performs gzip/signature validation on a previous logical backup run using `{"run_id":"..."}`
+- `POST /api/v1/restore/test` performs a full sandbox import test for a previous logical backup run using `{"run_id":"..."}` and requires `RESTORE_TEST_ENABLED=true`
+- Full sandbox restore testing verifies the imported database with exact restored base-table, view, trigger, routine, and event count checks plus a schema fingerprint comparison over those object names/types instead of relying on approximate MySQL row metadata, and it uses a bounded temporary database name safe for MySQL naming limits.
+- If `BACKUP_EXACT_ROW_COUNTS=true` was enabled when the backup was created, sandbox restore testing also verifies the exact restored per-table row counts and the exact restored total row count for each logical database.
+- If `BACKUP_SAMPLE_DATA_CHECKS=true` was enabled when the backup was created, sandbox restore testing also verifies sampled row-content hashes for base tables with primary keys.
+- Logical backup validation also verifies the persisted `.sql.gz` artifact SHA-256 when that hash is present in the run manifest, so corruption or tampering can be detected before restore.
+- When available, logical validation also verifies a SHA-256 of the decompressed SQL payload itself, so actual logical dump content changes are detected even if only the gzip wrapper changes.
+- Restore validation and sandbox restore-test outcomes are persisted back into `backup-runs.jsonl` and the run folder `manifest.json` when the local run record still exists
+
+CLI restore-validation helpers:
+
+- `go run ./cmd/sdl-db-backup-validate --mode logical --run-id <run_id>` performs logical artifact validation for a specific run
+- `go run ./cmd/sdl-db-backup-validate --mode restore --run-id <run_id>` performs the full sandbox restore test for a specific run and exits non-zero on validation failure
+- If `--run-id` is omitted, the CLI validates the latest recorded run from `backup-runs.jsonl`
 
 ## Duplicate Backup Audit
 

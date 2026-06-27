@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -219,6 +222,469 @@ func getDatabaseRowCount(cfg config, dbName string) (int64, error) {
 	return count, nil
 }
 
+func quoteIdentifier(engine string, ident string) string {
+	if engine == "postgres" {
+		return `"` + strings.ReplaceAll(ident, `"`, `""`) + `"`
+	}
+	return "`" + strings.ReplaceAll(ident, "`", "``") + "`"
+}
+
+func getDatabaseBaseTableNames(cfg config, dbName string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		query := "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+		cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+	} else {
+		query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+	return readNamesQuery(cmd, "base table names")
+}
+
+func getDatabaseExactRowCount(cfg config, dbName string) (int64, error) {
+	tableNames, err := getDatabaseBaseTableNames(cfg, dbName)
+	if err != nil {
+		return 0, err
+	}
+	if len(tableNames) == 0 {
+		return 0, nil
+	}
+
+	timeout := cfg.LogicalTimeoutPerDB
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var total int64
+	for _, tableName := range tableNames {
+		var query string
+		if cfg.DBEngine == "postgres" {
+			query = "SELECT COUNT(*) FROM " + quoteIdentifier(cfg.DBEngine, tableName)
+			out, err := dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query).CombinedOutput()
+			if err != nil {
+				return 0, fmt.Errorf("exact row count query failed table=%s: %s", tableName, chooseFailureMessage(err, strings.TrimSpace(string(out))))
+			}
+			count, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid exact row count for table=%s: %v", tableName, err)
+			}
+			total += count
+			continue
+		}
+
+		query = "SELECT COUNT(*) FROM " + quoteIdentifier(cfg.DBEngine, dbName) + "." + quoteIdentifier(cfg.DBEngine, tableName)
+		out, err := dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query).CombinedOutput()
+		if err != nil {
+			return 0, fmt.Errorf("exact row count query failed table=%s: %s", tableName, chooseFailureMessage(err, strings.TrimSpace(string(out))))
+		}
+		count, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid exact row count for table=%s: %v", tableName, err)
+		}
+		total += count
+	}
+	return total, nil
+}
+
+func getDatabaseExactTableRowCounts(cfg config, dbName string) (map[string]int64, int64, error) {
+	tableNames, err := getDatabaseBaseTableNames(cfg, dbName)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(tableNames) == 0 {
+		return map[string]int64{}, 0, nil
+	}
+
+	timeout := cfg.LogicalTimeoutPerDB
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	counts := make(map[string]int64, len(tableNames))
+	var total int64
+	for _, tableName := range tableNames {
+		var (
+			query string
+			out   []byte
+			err   error
+		)
+		if cfg.DBEngine == "postgres" {
+			query = "SELECT COUNT(*) FROM " + quoteIdentifier(cfg.DBEngine, tableName)
+			out, err = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query).CombinedOutput()
+		} else {
+			query = "SELECT COUNT(*) FROM " + quoteIdentifier(cfg.DBEngine, dbName) + "." + quoteIdentifier(cfg.DBEngine, tableName)
+			out, err = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query).CombinedOutput()
+		}
+		if err != nil {
+			return nil, 0, fmt.Errorf("exact row count query failed table=%s: %s", tableName, chooseFailureMessage(err, strings.TrimSpace(string(out))))
+		}
+		count, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		if err != nil {
+			return nil, 0, fmt.Errorf("invalid exact row count for table=%s: %v", tableName, err)
+		}
+		counts[tableName] = count
+		total += count
+	}
+	return counts, total, nil
+}
+
+func getPrimaryKeyColumns(cfg config, dbName string, tableName string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	if cfg.DBEngine == "postgres" {
+		query := `
+SELECT a.attname
+FROM pg_index i
+JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+WHERE i.indrelid = '` + strings.ReplaceAll(tableName, "'", "''") + `'::regclass
+  AND i.indisprimary
+ORDER BY array_position(i.indkey, a.attnum)
+`
+		return readNamesQuery(dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query), "primary key columns")
+	}
+
+	query := fmt.Sprintf(`
+SELECT k.COLUMN_NAME
+FROM information_schema.TABLE_CONSTRAINTS t
+JOIN information_schema.KEY_COLUMN_USAGE k
+  ON t.CONSTRAINT_NAME = k.CONSTRAINT_NAME
+ AND t.TABLE_SCHEMA = k.TABLE_SCHEMA
+ AND t.TABLE_NAME = k.TABLE_NAME
+WHERE t.CONSTRAINT_TYPE = 'PRIMARY KEY'
+  AND t.TABLE_SCHEMA = '%s'
+  AND t.TABLE_NAME = '%s'
+ORDER BY k.ORDINAL_POSITION
+`, dbName, tableName)
+	return readNamesQuery(dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query), "primary key columns")
+}
+
+func queryOutputSHA256(cmd *exec.Cmd, label string) (string, error) {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return "", fmt.Errorf("%s query failed: %s", label, chooseFailureMessage(err, message))
+	}
+	sum := sha256.Sum256(out)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func getDatabaseSampleRowHashes(cfg config, dbName string, limit int) (map[string]string, error) {
+	if limit < 1 {
+		return map[string]string{}, nil
+	}
+	tableNames, err := getDatabaseBaseTableNames(cfg, dbName)
+	if err != nil {
+		return nil, err
+	}
+	hashes := map[string]string{}
+	timeout := cfg.LogicalTimeoutPerDB
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	for _, tableName := range tableNames {
+		pkCols, err := getPrimaryKeyColumns(cfg, dbName, tableName)
+		if err != nil {
+			return nil, fmt.Errorf("primary key discovery failed table=%s: %v", tableName, err)
+		}
+		if len(pkCols) == 0 {
+			continue
+		}
+		orderBy := make([]string, 0, len(pkCols))
+		for _, col := range pkCols {
+			orderBy = append(orderBy, quoteIdentifier(cfg.DBEngine, col))
+		}
+		var query string
+		var cmd *exec.Cmd
+		if cfg.DBEngine == "postgres" {
+			query = "SELECT * FROM " + quoteIdentifier(cfg.DBEngine, tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
+			cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-F", "\t", "-c", query)
+		} else {
+			query = "SELECT * FROM " + quoteIdentifier(cfg.DBEngine, dbName) + "." + quoteIdentifier(cfg.DBEngine, tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
+			cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "--batch", "--raw", "--skip-column-names", "-e", query)
+		}
+		hash, err := queryOutputSHA256(cmd, "sample data hash")
+		if err != nil {
+			return nil, fmt.Errorf("sample data hash failed table=%s: %v", tableName, err)
+		}
+		hashes[tableName] = hash
+	}
+	return hashes, nil
+}
+
+func getDatabaseBaseTableCount(cfg config, dbName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		query := "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public'"
+		cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+	} else {
+		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE'", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return 0, fmt.Errorf("base table count query failed: %s", chooseFailureMessage(err, message))
+	}
+
+	valStr := strings.TrimSpace(string(out))
+	if valStr == "NULL" || valStr == "" {
+		return 0, nil
+	}
+	count, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid base table count %q: %v", valStr, err)
+	}
+	return count, nil
+}
+
+func getDatabaseViewCount(cfg config, dbName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		query := "SELECT COUNT(*) FROM pg_views WHERE schemaname='public'"
+		cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+	} else {
+		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s'", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return 0, fmt.Errorf("view count query failed: %s", chooseFailureMessage(err, message))
+	}
+
+	valStr := strings.TrimSpace(string(out))
+	if valStr == "NULL" || valStr == "" {
+		return 0, nil
+	}
+	count, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid view count %q: %v", valStr, err)
+	}
+	return count, nil
+}
+
+func getDatabaseTriggerCount(cfg config, dbName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		query := "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='public'"
+		cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+	} else {
+		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='%s'", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return 0, fmt.Errorf("trigger count query failed: %s", chooseFailureMessage(err, message))
+	}
+
+	valStr := strings.TrimSpace(string(out))
+	if valStr == "NULL" || valStr == "" {
+		return 0, nil
+	}
+	count, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid trigger count %q: %v", valStr, err)
+	}
+	return count, nil
+}
+
+func getDatabaseRoutineCount(cfg config, dbName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		query := "SELECT COUNT(*) FROM information_schema.routines WHERE specific_schema='public'"
+		cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+	} else {
+		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s'", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return 0, fmt.Errorf("routine count query failed: %s", chooseFailureMessage(err, message))
+	}
+
+	valStr := strings.TrimSpace(string(out))
+	if valStr == "NULL" || valStr == "" {
+		return 0, nil
+	}
+	count, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid routine count %q: %v", valStr, err)
+	}
+	return count, nil
+}
+
+func getDatabaseEventCount(cfg config, dbName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if cfg.DBEngine == "postgres" {
+		return 0, nil
+	} else {
+		query := fmt.Sprintf("SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='%s'", dbName)
+		cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return 0, fmt.Errorf("event count query failed: %s", chooseFailureMessage(err, message))
+	}
+
+	valStr := strings.TrimSpace(string(out))
+	if valStr == "NULL" || valStr == "" {
+		return 0, nil
+	}
+	count, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid event count %q: %v", valStr, err)
+	}
+	return count, nil
+}
+
+func buildSchemaFingerprint(sections map[string][]string) string {
+	lines := make([]string, 0)
+	keys := make([]string, 0, len(sections))
+	for key := range sections {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		values := append([]string(nil), sections[key]...)
+		sort.Strings(values)
+		for _, value := range values {
+			lines = append(lines, key+":"+value)
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func gzipPayloadSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return "", err
+	}
+	defer gz.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, gz); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func readNamesQuery(cmd *exec.Cmd, label string) ([]string, error) {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		return nil, fmt.Errorf("%s query failed: %s", label, chooseFailureMessage(err, message))
+	}
+	names := []string{}
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		name := strings.TrimSpace(scanner.Text())
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func getDatabaseSchemaFingerprint(cfg config, dbName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+	defer cancel()
+
+	sections := map[string][]string{}
+	if cfg.DBEngine == "postgres" {
+		queryMap := map[string]string{
+			"table":   "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
+			"view":    "SELECT viewname FROM pg_views WHERE schemaname='public' ORDER BY viewname",
+			"trigger": "SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema='public' ORDER BY trigger_name",
+			"routine": "SELECT routine_name FROM information_schema.routines WHERE specific_schema='public' ORDER BY routine_name",
+		}
+		for key, query := range queryMap {
+			cmd := dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
+			names, err := readNamesQuery(cmd, key+" fingerprint")
+			if err != nil {
+				return "", err
+			}
+			sections[key] = names
+		}
+		sections["event"] = nil
+		return buildSchemaFingerprint(sections), nil
+	}
+
+	queryMap := map[string]string{
+		"table":   fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName),
+		"view":    fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s' ORDER BY TABLE_NAME", dbName),
+		"trigger": fmt.Sprintf("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='%s' ORDER BY TRIGGER_NAME", dbName),
+		"routine": fmt.Sprintf("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' ORDER BY ROUTINE_NAME", dbName),
+		"event":   fmt.Sprintf("SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA='%s' ORDER BY EVENT_NAME", dbName),
+	}
+	for key, query := range queryMap {
+		cmd := dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
+		names, err := readNamesQuery(cmd, key+" fingerprint")
+		if err != nil {
+			return "", err
+		}
+		sections[key] = names
+	}
+	return buildSchemaFingerprint(sections), nil
+}
+
 func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
 	if cfg.DBEngine == "postgres" {
 		// PostgreSQL handles views safely in pg_dump, skipping broken view check
@@ -332,6 +798,20 @@ func logLogicalTableSummary(dbName string, tables []string) {
 	log.Printf("database=%s: dumping selected tables only (%d tables)", dbName, len(tables))
 }
 
+func normalizedLogicalParallelism(value int) int {
+	if value < 1 {
+		return 1
+	}
+	return value
+}
+
+func normalizedLogicalGzipLevel(value int) int {
+	if value < gzip.NoCompression || value > gzip.BestCompression {
+		return gzip.BestSpeed
+	}
+	return value
+}
+
 func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTables []string) (int64, error) {
 	log.Printf("starting dump for database=%s", dbName)
 	logLogicalTableSummary(dbName, tables)
@@ -361,7 +841,12 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 	}
 
 	counter := &countingWriter{writer: baseWriter}
-	gz := gzip.NewWriter(counter)
+	gz, err := gzip.NewWriterLevel(counter, normalizedLogicalGzipLevel(cfg.LogicalGzipLevel))
+	if err != nil {
+		closeFile()
+		removePartialOutput(outFile)
+		return 0, fmt.Errorf("setup gzip writer: %w", err)
+	}
 
 	var cmd *exec.Cmd
 	if cfg.DBEngine == "postgres" {
@@ -468,18 +953,99 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 	for attempt := 1; attempt <= cfg.RetryCount; attempt++ {
 		result.Attempts = attempt
 		if attempt == 1 {
-			if count, err := getDatabaseRowCount(cfg, dbName); err == nil {
+			if count, err := getDatabaseBaseTableCount(cfg, dbName); err == nil {
+				result.TableCount = count
+			} else {
+				log.Printf("warning: could not fetch base table count for database=%s: %v", dbName, err)
+			}
+			if count, err := getDatabaseViewCount(cfg, dbName); err == nil {
+				result.ViewCount = count
+			} else {
+				log.Printf("warning: could not fetch view count for database=%s: %v", dbName, err)
+			}
+			if count, err := getDatabaseTriggerCount(cfg, dbName); err == nil {
+				result.TriggerCount = count
+			} else {
+				log.Printf("warning: could not fetch trigger count for database=%s: %v", dbName, err)
+			}
+			if count, err := getDatabaseRoutineCount(cfg, dbName); err == nil {
+				result.RoutineCount = count
+			} else {
+				log.Printf("warning: could not fetch routine count for database=%s: %v", dbName, err)
+			}
+			if count, err := getDatabaseEventCount(cfg, dbName); err == nil {
+				result.EventCount = count
+			} else {
+				log.Printf("warning: could not fetch event count for database=%s: %v", dbName, err)
+			}
+			if fingerprint, err := getDatabaseSchemaFingerprint(cfg, dbName); err == nil {
+				result.SchemaFingerprint = fingerprint
+			} else {
+				log.Printf("warning: could not fetch schema fingerprint for database=%s: %v", dbName, err)
+			}
+			if cfg.ExactRowCounts {
+				if tableCounts, total, err := getDatabaseExactTableRowCounts(cfg, dbName); err == nil {
+					result.TableRowCounts = tableCounts
+					result.RowCounts = total
+					result.RowCountMode = "exact"
+				} else {
+					log.Printf("warning: could not fetch exact row count for database=%s: %v; falling back to estimate", dbName, err)
+					if count, fallbackErr := getDatabaseRowCount(cfg, dbName); fallbackErr == nil {
+						result.RowCounts = count
+						result.RowCountMode = "estimate"
+					} else {
+						log.Printf("warning: could not fetch estimated row count for database=%s: %v", dbName, fallbackErr)
+					}
+				}
+			} else if count, err := getDatabaseRowCount(cfg, dbName); err == nil {
 				result.RowCounts = count
+				result.RowCountMode = "estimate"
 			} else {
 				log.Printf("warning: could not fetch row count for database=%s: %v", dbName, err)
+			}
+			if cfg.SampleDataChecks {
+				if hashes, err := getDatabaseSampleRowHashes(cfg, dbName, cfg.SampleDataRows); err == nil {
+					result.SampleRowHashes = hashes
+					result.SampleRowCount = cfg.SampleDataRows
+				} else {
+					log.Printf("warning: could not capture sample data hashes for database=%s: %v", dbName, err)
+				}
 			}
 		}
 
 		sizeBytes, err := dumpDatabase(cfg, dbName, outFile, tables, brokenViews)
 		if err == nil {
+			artifactHash, hashErr := fileSHA256(outFile)
+			if hashErr != nil {
+				result.Error = fmt.Sprintf("compute artifact hash: %v", hashErr)
+				result.ErrorCategory = "output"
+				log.Printf("attempt %d/%d failed for database=%s category=%s err=%v", attempt, cfg.RetryCount, dbName, result.ErrorCategory, hashErr)
+				if attempt == cfg.RetryCount {
+					break
+				}
+				delay := retryDelay(cfg, attempt)
+				log.Printf("retrying database=%s in %s (attempt %d/%d)", dbName, delay, attempt+1, cfg.RetryCount)
+				time.Sleep(delay)
+				continue
+			}
+			sqlHash, sqlHashErr := gzipPayloadSHA256(outFile)
+			if sqlHashErr != nil {
+				result.Error = fmt.Sprintf("compute sql payload hash: %v", sqlHashErr)
+				result.ErrorCategory = "output"
+				log.Printf("attempt %d/%d failed for database=%s category=%s err=%v", attempt, cfg.RetryCount, dbName, result.ErrorCategory, sqlHashErr)
+				if attempt == cfg.RetryCount {
+					break
+				}
+				delay := retryDelay(cfg, attempt)
+				log.Printf("retrying database=%s in %s (attempt %d/%d)", dbName, delay, attempt+1, cfg.RetryCount)
+				time.Sleep(delay)
+				continue
+			}
 			result.Status = "success"
 			result.OutputPath = outFile
 			result.SizeBytes = sizeBytes
+			result.ArtifactSHA256 = artifactHash
+			result.SQLSHA256 = sqlHash
 			result.Duration = time.Since(started).Round(time.Millisecond).String()
 			return result
 		}
@@ -591,6 +1157,87 @@ func appendRunRecord(path string, record runRecord) error {
 	return nil
 }
 
+func rewriteRunRecords(path string, runs []runRecord) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tempFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	cleanupTemp := func() {
+		_ = os.Remove(tempPath)
+	}
+
+	for _, run := range runs {
+		encoded, err := json.Marshal(run)
+		if err != nil {
+			_ = tempFile.Close()
+			cleanupTemp()
+			return err
+		}
+		if _, err := tempFile.Write(append(encoded, '\n')); err != nil {
+			_ = tempFile.Close()
+			cleanupTemp()
+			return err
+		}
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		cleanupTemp()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		cleanupTemp()
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		cleanupTemp()
+		return err
+	}
+	return os.Chmod(path, 0o640)
+}
+
+func updateRunRecord(path, runID string, apply func(*runRecord)) (runRecord, error) {
+	runs, err := ReadRunHistory(path)
+	if err != nil {
+		return runRecord{}, err
+	}
+	if len(runs) == 0 {
+		return runRecord{}, fmt.Errorf("run %q not found", runID)
+	}
+
+	found := -1
+	records := make([]runRecord, len(runs))
+	for i, run := range runs {
+		records[i] = run
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].RunID == runID {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		return runRecord{}, fmt.Errorf("run %q not found", runID)
+	}
+
+	apply(&records[found])
+	if err := rewriteRunRecords(path, records); err != nil {
+		return runRecord{}, err
+	}
+	if strings.TrimSpace(records[found].RunFolder) != "" {
+		if _, err := os.Stat(records[found].RunFolder); err == nil {
+			if err := writeManifest(records[found].RunFolder, records[found]); err != nil {
+				return records[found], err
+			}
+		}
+	}
+	return records[found], nil
+}
+
 func writeManifest(runFolder string, record runRecord) error {
 	manifestPath := filepath.Join(runFolder, "manifest.json")
 	encoded, err := json.MarshalIndent(record, "", "  ")
@@ -603,6 +1250,11 @@ func writeManifest(runFolder string, record runRecord) error {
 func finalizeRun(cfg config, record *runRecord, startedAt time.Time) int {
 	if record.Duration == "" {
 		record.Duration = time.Since(startedAt).Round(time.Millisecond).String()
+	}
+
+	if record.Status == "skipped" {
+		log.Printf("backup summary status=skipped duration=%s", record.Duration)
+		return 0
 	}
 
 	if record.RunFolder != "" {

@@ -22,6 +22,71 @@ func TestLoadConfigWithOverridesReadsMetricsFile(t *testing.T) {
 	if want := filepath.Join(dir, "custom.prom"); cfg.MetricsFile != want {
 		t.Fatalf("expected metrics file %q, got %q", want, cfg.MetricsFile)
 	}
+	if cfg.MetricsEnv != "pilot" {
+		t.Fatalf("expected default metrics env %q, got %q", "pilot", cfg.MetricsEnv)
+	}
+}
+
+func TestLoadConfigWithOverridesReadsMetricsLabels(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte(strings.Join([]string{
+		"BACKUP_METRICS_JOB=custom_backup",
+		"BACKUP_METRICS_SERVICE=postgres",
+		"BACKUP_METRICS_ENV=staging",
+		"BACKUP_METRICS_REGION=blr1",
+	}, "\n")+"\n"), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	cfg, err := loadConfigWithOverrides(envPath)
+	if err != nil {
+		t.Fatalf("loadConfigWithOverrides returned error: %v", err)
+	}
+	if cfg.MetricsJob != "custom_backup" || cfg.MetricsService != "postgres" || cfg.MetricsEnv != "staging" || cfg.MetricsRegion != "blr1" {
+		t.Fatalf("unexpected metrics labels loaded: %+v", cfg)
+	}
+}
+
+func TestLoadConfigWithOverridesReadsExactRowCounts(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("BACKUP_EXACT_ROW_COUNTS=true\n"), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	cfg, err := loadConfigWithOverrides(envPath)
+	if err != nil {
+		t.Fatalf("loadConfigWithOverrides returned error: %v", err)
+	}
+	if !cfg.ExactRowCounts {
+		t.Fatalf("expected exact row counts enabled, got %+v", cfg)
+	}
+}
+
+func TestLoadConfigWithOverridesReadsSampleDataChecks(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("BACKUP_SAMPLE_DATA_CHECKS=true\nBACKUP_SAMPLE_DATA_ROWS=25\n"), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	cfg, err := loadConfigWithOverrides(envPath)
+	if err != nil {
+		t.Fatalf("loadConfigWithOverrides returned error: %v", err)
+	}
+	if !cfg.SampleDataChecks || cfg.SampleDataRows != 25 {
+		t.Fatalf("expected sample data checks enabled with 25 rows, got %+v", cfg)
+	}
+}
+
+func TestMetricsLabelStringDefaultsAndRegion(t *testing.T) {
+	if got := metricsLabelString(config{}); got != `job="sdl_db_backup",service="mysql",env="pilot"` {
+		t.Fatalf("unexpected default labels: %s", got)
+	}
+	if got := metricsLabelString(config{MetricsRegion: "digitalocean-blr1"}); got != `job="sdl_db_backup",service="mysql",env="pilot",region="digitalocean-blr1"` {
+		t.Fatalf("unexpected region labels: %s", got)
+	}
 }
 
 func TestWriteBackupMetricsFileWritesPrometheusTextfile(t *testing.T) {
@@ -41,7 +106,7 @@ func TestWriteBackupMetricsFileWritesPrometheusTextfile(t *testing.T) {
 		PhysicalDurationSeconds:   90.5,
 	}
 
-	if err := writeBackupMetricsFile(path, snapshot, `job="sdl_db_backup",service="mysql"`); err != nil {
+	if err := writeBackupMetricsFile(path, snapshot, `job="sdl_db_backup",service="mysql",env="pilot"`); err != nil {
 		t.Fatalf("writeBackupMetricsFile returned error: %v", err)
 	}
 
@@ -57,27 +122,33 @@ func TestWriteBackupMetricsFileWritesPrometheusTextfile(t *testing.T) {
 	required := []string{
 		"# HELP backup_last_run_timestamp Unix timestamp when the most recent backup run ended.",
 		"# TYPE backup_last_run_timestamp gauge",
-		`backup_last_run_timestamp{job="sdl_db_backup",service="mysql"} 1760000000`,
-		`backup_last_success_timestamp{job="sdl_db_backup",service="mysql"} 1759999900`,
-		`backup_last_duration_seconds{job="sdl_db_backup",service="mysql"} 12.345`,
-		`backup_last_size_bytes{job="sdl_db_backup",service="mysql"} 4096`,
-		`backup_last_status{job="sdl_db_backup",service="mysql"} 1`,
-		`backup_upload_success{job="sdl_db_backup",service="mysql"} 1`,
-		`backup_metrics_write_success{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_cleanup_success{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_last_cleanup_timestamp{job="sdl_db_backup",service="mysql"} 1759999800`,
-		`backup_logical_last_attempted{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_logical_last_status{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_logical_last_total_databases{job="sdl_db_backup",service="mysql"} 2`,
-		`backup_logical_last_succeeded_databases{job="sdl_db_backup",service="mysql"} 2`,
-		`backup_logical_last_failed_databases{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_physical_last_attempted{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_physical_last_status{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_physical_last_duration_seconds{job="sdl_db_backup",service="mysql"} 90.500`,
-		`backup_run_in_progress{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_current_run_start_timestamp{job="sdl_db_backup",service="mysql"} 0`,
-		`backup_current_run_duration_seconds{job="sdl_db_backup",service="mysql"} 0.000`,
-		`backup_metrics_last_update_timestamp{job="sdl_db_backup",service="mysql"} 0`,
+		`backup_last_run_timestamp{job="sdl_db_backup",service="mysql",env="pilot"} 1760000000`,
+		`backup_last_success_timestamp{job="sdl_db_backup",service="mysql",env="pilot"} 1759999900`,
+		`backup_last_duration_seconds{job="sdl_db_backup",service="mysql",env="pilot"} 12.345`,
+		`backup_last_size_bytes{job="sdl_db_backup",service="mysql",env="pilot"} 4096`,
+		`backup_last_status{job="sdl_db_backup",service="mysql",env="pilot"} 1`,
+		`backup_upload_success{job="sdl_db_backup",service="mysql",env="pilot"} 1`,
+		`backup_metrics_write_success{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_cleanup_success{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_last_cleanup_timestamp{job="sdl_db_backup",service="mysql",env="pilot"} 1759999800`,
+		`backup_logical_last_attempted{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_logical_last_status{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_logical_last_total_databases{job="sdl_db_backup",service="mysql",env="pilot"} 2`,
+		`backup_logical_last_succeeded_databases{job="sdl_db_backup",service="mysql",env="pilot"} 2`,
+		`backup_logical_last_failed_databases{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_physical_last_attempted{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_physical_last_status{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_physical_last_duration_seconds{job="sdl_db_backup",service="mysql",env="pilot"} 90.500`,
+		`backup_adaptive_load_per_cpu{job="sdl_db_backup",service="mysql",env="pilot"} 0.000`,
+		`backup_adaptive_logical_parallel{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_adaptive_xtrabackup_parallel{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_adaptive_xbcloud_parallel{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_physical_retry_count{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_physical_rate_limit_retry_count{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_run_in_progress{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_current_run_start_timestamp{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
+		`backup_current_run_duration_seconds{job="sdl_db_backup",service="mysql",env="pilot"} 0.000`,
+		`backup_metrics_last_update_timestamp{job="sdl_db_backup",service="mysql",env="pilot"} 0`,
 	}
 	for _, want := range required {
 		if !strings.Contains(text, want) {
@@ -111,8 +182,11 @@ func TestBuildBackupMetricsSnapshotPreservesPreviousSuccessTimestampOnFailure(t 
 
 	cfg := config{MetricsFile: path}
 	record := runRecord{
-		Status:    "failed",
-		RunFolder: "/tmp/run-1",
+		Status:                  "failed",
+		RunFolder:               "/tmp/run-1",
+		AdaptiveLoadPerCPU:      0.75,
+		AdaptiveLogicalParallel: 2,
+		AdaptiveXbcloudParallel: 1,
 		Results: []databaseResult{
 			{Name: "db1", SizeBytes: 2048},
 		},
@@ -150,6 +224,9 @@ func TestBuildBackupMetricsSnapshotPreservesPreviousSuccessTimestampOnFailure(t 
 	if snapshot.PhysicalAttempted != 0 || snapshot.PhysicalStatus != 0 {
 		t.Fatalf("expected physical backup skipped metrics, got attempted=%d status=%d", snapshot.PhysicalAttempted, snapshot.PhysicalStatus)
 	}
+	if snapshot.AdaptiveLoadPerCPU != 0.75 || snapshot.AdaptiveLogicalParallel != 2 || snapshot.AdaptiveXbcloudParallel != 1 {
+		t.Fatalf("expected adaptive metrics preserved, got load=%.3f logical=%d xbcloud=%d", snapshot.AdaptiveLoadPerCPU, snapshot.AdaptiveLogicalParallel, snapshot.AdaptiveXbcloudParallel)
+	}
 }
 
 func TestBuildInProgressBackupMetricsSnapshotPreservesPreviousFinalMetrics(t *testing.T) {
@@ -173,6 +250,12 @@ func TestBuildInProgressBackupMetricsSnapshotPreservesPreviousFinalMetrics(t *te
 		`backup_physical_last_attempted{job="sdl_db_backup",service="mysql"} 1`,
 		`backup_physical_last_status{job="sdl_db_backup",service="mysql"} 0`,
 		`backup_physical_last_duration_seconds{job="sdl_db_backup",service="mysql"} 321.000`,
+		`backup_adaptive_load_per_cpu{job="sdl_db_backup",service="mysql"} 0.420`,
+		`backup_adaptive_logical_parallel{job="sdl_db_backup",service="mysql"} 2`,
+		`backup_adaptive_xtrabackup_parallel{job="sdl_db_backup",service="mysql"} 3`,
+		`backup_adaptive_xbcloud_parallel{job="sdl_db_backup",service="mysql"} 2`,
+		`backup_physical_retry_count{job="sdl_db_backup",service="mysql"} 2`,
+		`backup_physical_rate_limit_retry_count{job="sdl_db_backup",service="mysql"} 1`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(existing), 0o640); err != nil {
 		t.Fatalf("write existing metrics: %v", err)
@@ -201,6 +284,12 @@ func TestBuildInProgressBackupMetricsSnapshotPreservesPreviousFinalMetrics(t *te
 	}
 	if snapshot.PhysicalDurationSeconds != 321 {
 		t.Fatalf("expected physical duration preserved, got %.3f", snapshot.PhysicalDurationSeconds)
+	}
+	if snapshot.AdaptiveLoadPerCPU != 0.42 || snapshot.AdaptiveLogicalParallel != 2 || snapshot.AdaptiveXtrabackupParallel != 3 || snapshot.AdaptiveXbcloudParallel != 2 {
+		t.Fatalf("expected adaptive metrics preserved, got load=%.3f logical=%d physical=%d xbcloud=%d", snapshot.AdaptiveLoadPerCPU, snapshot.AdaptiveLogicalParallel, snapshot.AdaptiveXtrabackupParallel, snapshot.AdaptiveXbcloudParallel)
+	}
+	if snapshot.PhysicalRetryCount != 2 || snapshot.PhysicalRateLimitRetryCount != 1 {
+		t.Fatalf("expected physical retry metrics preserved, got retries=%d rate_limit=%d", snapshot.PhysicalRetryCount, snapshot.PhysicalRateLimitRetryCount)
 	}
 	if snapshot.RunInProgress != 1 {
 		t.Fatalf("expected in-progress metric 1, got %d", snapshot.RunInProgress)
@@ -247,7 +336,7 @@ func TestGetObservabilityReportReadsMetricsFile(t *testing.T) {
 		PhysicalDurationSeconds:    0,
 		MetricsLastUpdateTimestamp: 1760000001,
 	}
-	if err := writeBackupMetricsFile(path, snapshot, `job="sdl_db_backup",service="mysql"`); err != nil {
+	if err := writeBackupMetricsFile(path, snapshot, `job="sdl_db_backup",service="mysql",env="pilot"`); err != nil {
 		t.Fatalf("writeBackupMetricsFile returned error: %v", err)
 	}
 

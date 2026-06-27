@@ -2,13 +2,17 @@ package backupapp
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -46,6 +50,24 @@ func TestBuildMySQLDumpArgsCanLimitTables(t *testing.T) {
 	usersIndex := slices.Index(args, "users")
 	if dbIndex < 0 || usersIndex <= dbIndex {
 		t.Fatalf("expected tables after database name: %v", args)
+	}
+}
+
+func TestNormalizedLogicalParallelism(t *testing.T) {
+	if got := normalizedLogicalParallelism(0); got != 1 {
+		t.Fatalf("expected parallelism fallback 1, got %d", got)
+	}
+	if got := normalizedLogicalParallelism(3); got != 3 {
+		t.Fatalf("expected parallelism 3, got %d", got)
+	}
+}
+
+func TestNormalizedLogicalGzipLevel(t *testing.T) {
+	if got := normalizedLogicalGzipLevel(99); got != gzip.BestSpeed {
+		t.Fatalf("expected invalid gzip level to fall back to BestSpeed, got %d", got)
+	}
+	if got := normalizedLogicalGzipLevel(0); got != 0 {
+		t.Fatalf("expected gzip level 0 preserved, got %d", got)
 	}
 }
 
@@ -102,6 +124,62 @@ func TestShouldLogPhysicalLine(t *testing.T) {
 	}
 	if shouldLogPhysicalLine("xbcloud", "xbcloud: [0] successfully uploaded chunk: file") {
 		t.Fatalf("expected xbcloud chunk line to be suppressed")
+	}
+}
+
+func TestBuildSchemaFingerprintDeterministic(t *testing.T) {
+	a := buildSchemaFingerprint(map[string][]string{
+		"view":    {"v_users"},
+		"table":   {"orders", "users"},
+		"trigger": {"trg_orders_after_insert"},
+		"routine": {"sp_rebuild_cache"},
+		"event":   {"ev_cleanup"},
+	})
+	b := buildSchemaFingerprint(map[string][]string{
+		"event":   {"ev_cleanup"},
+		"routine": {"sp_rebuild_cache"},
+		"trigger": {"trg_orders_after_insert"},
+		"table":   {"users", "orders"},
+		"view":    {"v_users"},
+	})
+	if a == "" || b == "" {
+		t.Fatalf("expected non-empty schema fingerprints")
+	}
+	if a != b {
+		t.Fatalf("expected deterministic fingerprint, got %q and %q", a, b)
+	}
+}
+
+func TestFileSHA256(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "artifact.bin")
+	content := []byte("hello backup")
+	if err := os.WriteFile(path, content, 0o640); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	hash, err := fileSHA256(path)
+	if err != nil {
+		t.Fatalf("fileSHA256 returned error: %v", err)
+	}
+	expected := sha256.Sum256(content)
+	if hash != hex.EncodeToString(expected[:]) {
+		t.Fatalf("unexpected sha256: %s", hash)
+	}
+}
+
+func TestGzipPayloadSHA256(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "artifact.sql.gz")
+	if err := writeTestGzipSQL(path); err != nil {
+		t.Fatalf("writeTestGzipSQL: %v", err)
+	}
+	hash, err := gzipPayloadSHA256(path)
+	if err != nil {
+		t.Fatalf("gzipPayloadSHA256 returned error: %v", err)
+	}
+	expected := sha256.Sum256([]byte("CREATE TABLE test (id int);\n-- Dump completed\n"))
+	if hash != hex.EncodeToString(expected[:]) {
+		t.Fatalf("unexpected payload sha256: %s", hash)
 	}
 }
 
@@ -172,6 +250,9 @@ func TestBuildManualRunConfigPreflightOnlyMarksConfigAndPreview(t *testing.T) {
 	if !strings.Contains(strings.Join(preview.Lines, "\n"), "Run type: preflight only") {
 		t.Fatalf("expected preview to describe preflight-only mode: %+v", preview)
 	}
+	if !strings.Contains(strings.Join(preview.Lines, "\n"), "Invocation context:") {
+		t.Fatalf("expected preview to describe invocation context: %+v", preview)
+	}
 }
 
 func TestParseSystemdShow(t *testing.T) {
@@ -239,6 +320,8 @@ func TestSaveConfigPreservesUnknownAndAppendsManagedKeys(t *testing.T) {
 		RetentionDaily:          5,
 		LogicalEnabled:          true,
 		LogicalTimeoutPerDB:     30 * time.Minute,
+		LogicalParallel:         2,
+		LogicalGzipLevel:        1,
 		LogicalS3UploadEnabled:  false,
 		LogicalSchedule:         "always",
 		PhysicalSchedule:        "weekly@sun,02:00",
@@ -284,6 +367,38 @@ func TestSaveConfigPreservesUnknownAndAppendsManagedKeys(t *testing.T) {
 	}
 	if !strings.Contains(text, "BACKUP_LOGICAL_SCHEDULE=always") {
 		t.Fatalf("expected missing managed key appended: %s", text)
+	}
+	if !strings.Contains(text, "BACKUP_LOGICAL_PARALLEL=2") {
+		t.Fatalf("expected logical parallel saved: %s", text)
+	}
+	if !strings.Contains(text, "BACKUP_LOGICAL_GZIP_LEVEL=1") {
+		t.Fatalf("expected logical gzip level saved: %s", text)
+	}
+}
+
+func TestLoadConfigWithOverridesReadsLogicalPerformanceSettings(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	content := "BACKUP_LOGICAL_PARALLEL=3\nBACKUP_LOGICAL_GZIP_LEVEL=5\nBACKUP_XBCLOUD_PARALLEL=2\nBACKUP_XBCLOUD_FIFO_STREAMS=1\n"
+	if err := os.WriteFile(envPath, []byte(content), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	cfg, err := loadConfigWithOverrides(envPath)
+	if err != nil {
+		t.Fatalf("loadConfigWithOverrides returned error: %v", err)
+	}
+	if cfg.LogicalParallel != 3 {
+		t.Fatalf("expected logical parallel 3, got %d", cfg.LogicalParallel)
+	}
+	if cfg.LogicalGzipLevel != 5 {
+		t.Fatalf("expected logical gzip level 5, got %d", cfg.LogicalGzipLevel)
+	}
+	if cfg.XbcloudParallel != 2 {
+		t.Fatalf("expected xbcloud parallel 2, got %d", cfg.XbcloudParallel)
+	}
+	if cfg.XbcloudFIFOStreams != 1 {
+		t.Fatalf("expected xbcloud fifo streams 1, got %d", cfg.XbcloudFIFOStreams)
 	}
 }
 
@@ -412,7 +527,7 @@ func TestReadLatestRunInfoReturnsLastRecord(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "backup-runs.jsonl")
 	content := `{"timestamp":"2026-05-27T10:00:00Z","run_id":"old","status":"failed","duration":"1s","databases_total":1,"databases_succeeded":0,"databases_failed":1}
-{"timestamp":"2026-05-28T10:00:00Z","run_id":"new","status":"success","run_folder":"/tmp/run","log_file":"/tmp/run.log","duration":"2s","databases_total":2,"databases_succeeded":2,"databases_failed":0}
+{"timestamp":"2026-05-28T10:00:00Z","run_id":"new","status":"success","run_folder":"/tmp/run","log_file":"/tmp/run.log","duration":"2s","databases_total":2,"databases_succeeded":2,"databases_failed":0,"logical_upload_status":"success","adaptive_xbcloud_parallel":2}
 `
 	if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
 		t.Fatalf("write runs file: %v", err)
@@ -423,6 +538,86 @@ func TestReadLatestRunInfoReturnsLastRecord(t *testing.T) {
 	}
 	if info == nil || info.RunID != "new" || info.Status != "success" {
 		t.Fatalf("unexpected latest run: %+v", info)
+	}
+	if info.LogicalUploadStatus != "success" {
+		t.Fatalf("expected logical upload status preserved, got %+v", info)
+	}
+	if info.AdaptiveXbcloudParallel != 2 {
+		t.Fatalf("expected xbcloud adaptive parallel preserved, got %+v", info)
+	}
+	if info.FinalOutcome != "" {
+		t.Fatalf("expected no final outcome for clean success, got %+v", info)
+	}
+}
+
+func TestDeriveFinalOutcome(t *testing.T) {
+	cases := []struct {
+		name               string
+		status             string
+		total              int
+		failed             int
+		failureReason      string
+		cleanupError       string
+		logicalUploadError string
+		want               string
+	}{
+		{name: "explicit failure reason", status: "failed", failureReason: "logical backup upload failed: s3 unavailable", want: "logical backup upload failed: s3 unavailable"},
+		{name: "upload error fallback", status: "failed", logicalUploadError: "s3 unavailable", want: "logical upload failed: s3 unavailable"},
+		{name: "cleanup issue success", status: "success", cleanupError: "permission denied", want: "backup completed with cleanup issue: permission denied"},
+		{name: "partial derived", status: "partial", total: 4, failed: 1, want: "1 of 4 database backups failed"},
+		{name: "failed before db finish", status: "failed", want: "backup failed before any database finished"},
+	}
+	for _, tc := range cases {
+		if got := DeriveFinalOutcome(tc.status, tc.total, tc.failed, tc.failureReason, tc.cleanupError, tc.logicalUploadError); got != tc.want {
+			t.Fatalf("%s: expected %q, got %q", tc.name, tc.want, got)
+		}
+	}
+}
+
+func TestBuildAPIRunResultIncludesFinalOutcome(t *testing.T) {
+	run := RunResult{
+		RunID:              "run-1",
+		Status:             "partial",
+		DatabasesTotal:     4,
+		DatabasesFailed:    1,
+		CleanupError:       "",
+		LogicalUploadError: "",
+	}
+	apiRun := BuildAPIRunResult(run)
+	if apiRun.RunID != "run-1" {
+		t.Fatalf("expected run id preserved, got %+v", apiRun)
+	}
+	if apiRun.FinalOutcome != "1 of 4 database backups failed" {
+		t.Fatalf("expected derived final outcome, got %+v", apiRun)
+	}
+}
+
+func TestMarkLogicalUploadFailureUpdatesRunStatus(t *testing.T) {
+	record := runRecord{Status: "success"}
+
+	markLogicalUploadFailure(&record, errors.New("s3 unavailable"))
+
+	if record.Status != "failed" {
+		t.Fatalf("expected upload failure to mark successful run failed, got %q", record.Status)
+	}
+	if record.LogicalUploadStatus != "failed" || record.LogicalUploadError != "s3 unavailable" {
+		t.Fatalf("unexpected logical upload fields: %+v", record)
+	}
+	if !strings.Contains(record.FailureReason, "logical backup upload failed") {
+		t.Fatalf("expected upload failure reason, got %q", record.FailureReason)
+	}
+}
+
+func TestMarkLogicalUploadFailurePreservesPartialStatus(t *testing.T) {
+	record := runRecord{Status: "partial", FailureReason: "1 of 2 database backups failed"}
+
+	markLogicalUploadFailure(&record, errors.New("s3 unavailable"))
+
+	if record.Status != "partial" {
+		t.Fatalf("expected partial status preserved, got %q", record.Status)
+	}
+	if record.FailureReason != "1 of 2 database backups failed" {
+		t.Fatalf("expected original failure reason preserved, got %q", record.FailureReason)
 	}
 }
 
@@ -450,7 +645,7 @@ func TestGetHealthReportWithDisabledBackups(t *testing.T) {
 		t.Fatalf("create metrics dir: %v", err)
 	}
 	runsPath := filepath.Join(logDir, "backup-runs.jsonl")
-	runs := `{"timestamp":"2026-05-28T12:00:00Z","run_id":"run-1","status":"success","run_folder":"/tmp/run-1","log_file":"/tmp/run-1.log","duration":"4s","databases_total":0,"databases_succeeded":0,"databases_failed":0}
+	runs := `{"timestamp":"2026-05-28T12:00:00Z","run_id":"run-1","status":"success","run_folder":"/tmp/run-1","log_file":"/tmp/run-1.log","duration":"4s","databases_total":0,"databases_succeeded":0,"databases_failed":0,"adaptive_xbcloud_parallel":2}
 `
 	if err := os.WriteFile(runsPath, []byte(runs), 0o640); err != nil {
 		t.Fatalf("write run log: %v", err)
@@ -462,6 +657,9 @@ func TestGetHealthReportWithDisabledBackups(t *testing.T) {
 	}
 	if report.LatestRun == nil || report.LatestRun.RunID != "run-1" {
 		t.Fatalf("unexpected latest run in report: %+v", report.LatestRun)
+	}
+	if report.LatestRun.AdaptiveXbcloudParallel != 2 {
+		t.Fatalf("expected latest run xbcloud adaptive parallel, got %+v", report.LatestRun)
 	}
 	if report.Logical.Status != "disabled" {
 		t.Fatalf("expected logical disabled, got %q", report.Logical.Status)
@@ -495,5 +693,68 @@ func TestFilterDatabasesAllowsExplicitBackupPrefixedDatabases(t *testing.T) {
 	filtered := filterDatabases(cfg, discovered)
 	if strings.Join(filtered, ",") != "bk_pf_main" {
 		t.Fatalf("unexpected filtered databases: %v", filtered)
+	}
+}
+
+type fakeOwnershipInfo struct {
+	name  string
+	mode  os.FileMode
+	isDir bool
+	sys   any
+}
+
+func (f fakeOwnershipInfo) Name() string       { return f.name }
+func (f fakeOwnershipInfo) Size() int64        { return 0 }
+func (f fakeOwnershipInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeOwnershipInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeOwnershipInfo) IsDir() bool        { return f.isDir }
+func (f fakeOwnershipInfo) Sys() any           { return f.sys }
+
+func TestScanOwnershipDriftFindsMismatchedNestedEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "old-run"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "old-run", "bk.sql.gz"), []byte("x"), 0o640); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "owned.log"), []byte("ok"), 0o640); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	expectedUID := uint32(1000)
+	lstat := func(path string) (os.FileInfo, error) {
+		base := filepath.Base(path)
+		uid := expectedUID
+		if strings.Contains(path, "old-run") {
+			uid = 0
+		}
+		mode := os.FileMode(0o640)
+		isDir := false
+		if base == "old-run" {
+			mode = os.ModeDir | 0o755
+			isDir = true
+		}
+		return fakeOwnershipInfo{
+			name:  base,
+			mode:  mode,
+			isDir: isDir,
+			sys:   &syscall.Stat_t{Uid: uid, Gid: 0},
+		}, nil
+	}
+
+	findings, err := scanOwnershipDrift(dir, expectedUID, 2, 5, lstat)
+	if err != nil {
+		t.Fatalf("scanOwnershipDrift returned error: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 drift findings, got %+v", findings)
+	}
+	if findings[0].RelativePath != "old-run" || findings[1].RelativePath != filepath.Join("old-run", "bk.sql.gz") {
+		t.Fatalf("unexpected drift findings: %+v", findings)
+	}
+	formatted := formatOwnershipDrift(findings)
+	if !strings.Contains(formatted, "old-run(uid=0") || !strings.Contains(formatted, filepath.Join("old-run", "bk.sql.gz")+"(uid=0") {
+		t.Fatalf("unexpected formatted drift summary: %s", formatted)
 	}
 }

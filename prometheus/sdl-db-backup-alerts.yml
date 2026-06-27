@@ -1,0 +1,114 @@
+groups:
+  - name: sdl-db-backup
+    rules:
+      - alert: SDLDBBackupFailedOverall
+        expr: backup_last_status{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "SDL DB backup failed"
+          description: "The latest SDL DB backup run did not complete successfully."
+
+      - alert: SDLDBLogicalBackupFailed
+        expr: |
+          backup_logical_last_attempted{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 1
+          and
+          backup_logical_last_status{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "SDL logical backup failed"
+          description: "The most recent logical backup attempt failed."
+
+      - alert: SDLDBPhysicalBackupFailed
+        expr: |
+          backup_physical_last_attempted{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 1
+          and
+          backup_physical_last_status{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "SDL physical backup failed"
+          description: "The most recent physical backup attempt failed."
+
+      - alert: SDLDBBackupUploadFailed
+        expr: backup_upload_success{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "SDL backup upload failed"
+          description: "Backup creation may have succeeded, but the final upload stage failed."
+
+      - alert: SDLDBBackupMetricsWriteFailed
+        expr: backup_metrics_write_success{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SDL backup metrics write failed"
+          description: "The backup runner could not update the Node Exporter textfile metric output."
+
+      - alert: SDLDBBackupCleanupFailed
+        expr: backup_cleanup_success{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SDL backup cleanup failed"
+          description: "The latest backup run completed with cleanup errors. Check for ownership or retention drift."
+
+      - alert: SDLDBLogicalValidationFailed
+        expr: backup_logical_validation_last_status{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SDL logical backup validation failed"
+          description: "The latest logical backup validation or restore verification failed."
+
+      - alert: SDLDBBackupStuckRunning
+        expr: |
+          backup_run_in_progress{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 1
+          and
+          backup_current_run_duration_seconds{exported_job="sdl_db_backup",service="mysql",env="pilot"} > 7200
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SDL backup appears stuck"
+          description: "A backup is still marked running after exceeding the expected duration threshold."
+
+      - alert: SDLDBBackupMetricsStaleDuringRun
+        expr: |
+          backup_run_in_progress{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 1
+          and
+          (time() - backup_metrics_last_update_timestamp{exported_job="sdl_db_backup",service="mysql",env="pilot"}) > 120
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SDL backup metrics stopped updating"
+          description: "The backup still reports an in-progress run, but the textfile metrics are no longer refreshing."
+
+      - alert: SDLDBNoSuccessfulBackupRecently
+        expr: (time() - backup_last_success_timestamp{exported_job="sdl_db_backup",service="mysql",env="pilot"}) > 43200
+        for: 15m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "SDL backup success is stale"
+          description: "No fully successful backup has been recorded within the expected SLA window."

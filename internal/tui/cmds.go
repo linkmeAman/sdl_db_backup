@@ -336,7 +336,7 @@ func readRunHistory(path string) ([]backupapp.RunResult, error) {
 func validateLogicalRunCmd(cfg backupapp.Config, runID string) tea.Cmd {
 	return func() tea.Msg {
 		res, err := backupapp.ValidateLogicalRun(cfg, runID)
-		return validationMsg{result: res, err: err}
+		return validationMsg{mode: "logical validation", result: res, err: err}
 	}
 }
 
@@ -344,6 +344,6 @@ func testRestoreRunCmd(cfg backupapp.Config, runID string) tea.Cmd {
 	return func() tea.Msg {
 		// Pass nil for progress currently since tea.Cmd is synchronous
 		res, err := backupapp.FullRestoreValidation(cfg, runID, nil)
-		return validationMsg{result: res, err: err}
+		return validationMsg{mode: "sandbox restore test", result: res, err: err}
 	}
 }

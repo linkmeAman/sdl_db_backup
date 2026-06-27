@@ -1,0 +1,29 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions-sdl-db-backup.yml
+
+clients:
+  - url: http://localhost:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: sdl-db-backup-run-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: sdl_db_backup
+          service: mysql
+          env: pilot
+          log_kind: run
+          __path__: /mnt/volume_1/backup/mysql_backup/logs/*_*.log
+    pipeline_stages:
+      - regex:
+          expression: "^(?P<ts>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}) (?P<msg>.*)$"
+      - timestamp:
+          source: ts
+          format: "2006/01/02 15:04:05.000000"
+      - output:
+          source: msg

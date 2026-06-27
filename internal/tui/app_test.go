@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -314,10 +315,71 @@ func TestLayoutReservesSpaceForNotifications(t *testing.T) {
 	}
 }
 
+func TestDashboardShowsLatestValidationSummary(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	m.width = 120
+	m.height = 30
+	m.dashboardView.Height = 100
+	m.healthLoaded = true
+	m.health = backupapp.HealthReport{
+		DailyLogPath: "/tmp/2026-06-24.log",
+		Logical:      backupapp.HealthCheck{Name: "logical", Status: "ok", Message: "ok"},
+		Physical:     backupapp.HealthCheck{Name: "physical", Status: "ok", Message: "ok"},
+		Metrics:      backupapp.HealthCheck{Name: "metrics", Status: "ok", Message: "ok"},
+		Runtime: backupapp.RuntimeProfile{
+			CurrentUser:      "developer",
+			ExecutionSource:  "runner",
+			SchedulerContext: "user-level scheduled runner",
+			AuditChecklist: []string{
+				"Inspect root crontab and /etc/cron.* for backup commands.",
+			},
+		},
+		RestoreVerification: backupapp.RestoreVerificationProfile{
+			RestoreTestEnabled: true,
+			ExactRowCounts:     true,
+			SampleDataChecks:   true,
+			SampleDataRows:     25,
+		},
+		LatestRun: &backupapp.LatestRunInfo{
+			RunID:                    "run-1",
+			Status:                   "success",
+			Timestamp:                time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC),
+			DatabasesSucceeded:       2,
+			DatabasesTotal:           2,
+			ValidationStatus:         "success",
+			ValidationMode:           "sandbox restore test",
+			ValidationCheckedAt:      time.Date(2026, 6, 24, 12, 5, 0, 0, time.UTC),
+			AdaptiveLoadPerCPU:       0.34,
+			AdaptiveLogicalParallel:  2,
+			AdaptivePhysicalParallel: 3,
+			AdaptiveXbcloudParallel:  2,
+		},
+	}
+
+	view := m.viewDashboard(160)
+	for _, want := range []string{
+		"Validation",
+		"success via sandbox restore test at 2026-06-24 12:05",
+		"Restore Verify",
+		"test=true exact=true sample=25",
+		"xbcloud=2",
+		"user-level scheduled runner",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected dashboard to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestConfigFieldsIncludeAPIAndSystemdSettings(t *testing.T) {
 	m := newModel(".env", zeroConfigForTUITest())
 	foundAPI := false
 	foundServiceUnit := false
+	foundExactRows := false
+	foundSampleChecks := false
+	foundSampleRows := false
+	foundXbcloudParallel := false
+	foundXbcloudFIFO := false
 	for _, field := range m.fields {
 		if field.Key == "BACKUP_API_ENABLED" {
 			foundAPI = true
@@ -325,8 +387,23 @@ func TestConfigFieldsIncludeAPIAndSystemdSettings(t *testing.T) {
 		if field.Key == "BACKUP_SYSTEMD_SERVICE_NAME" {
 			foundServiceUnit = true
 		}
+		if field.Key == "BACKUP_EXACT_ROW_COUNTS" {
+			foundExactRows = true
+		}
+		if field.Key == "BACKUP_SAMPLE_DATA_CHECKS" {
+			foundSampleChecks = true
+		}
+		if field.Key == "BACKUP_SAMPLE_DATA_ROWS" {
+			foundSampleRows = true
+		}
+		if field.Key == "BACKUP_XBCLOUD_PARALLEL" {
+			foundXbcloudParallel = true
+		}
+		if field.Key == "BACKUP_XBCLOUD_FIFO_STREAMS" {
+			foundXbcloudFIFO = true
+		}
 	}
-	if !foundAPI || !foundServiceUnit {
+	if !foundAPI || !foundServiceUnit || !foundExactRows || !foundSampleChecks || !foundSampleRows || !foundXbcloudParallel || !foundXbcloudFIFO {
 		t.Fatalf("expected API and systemd config fields, got %+v", m.fields)
 	}
 }
@@ -365,11 +442,145 @@ func TestScopeActionsNotifyOperator(t *testing.T) {
 	}
 }
 
+func TestHistoryViewShowsValidationDetailsForSelectedRun(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	run := backupapp.RunResult{
+		RunID:               "run-1",
+		Status:              "failed",
+		RunFolder:           "/tmp/run-1",
+		LogFile:             "/tmp/run-1.log",
+		FailureReason:       "logical backup upload failed: s3 unavailable",
+		LogicalUploadStatus: "failed",
+		LogicalUploadError:  "s3 unavailable",
+	}
+	m.history = []backupapp.RunResult{run}
+	m.historySelected = 0
+	m.validations = map[string]runValidationState{
+		"run-1": {
+			Mode: "sandbox restore test",
+			Result: backupapp.LogicalValidationResult{
+				RunID: "run-1",
+				Valid: false,
+				Databases: []backupapp.DatabaseValidationResult{
+					{Database: "pf_central", Valid: false, Error: "row count mismatch"},
+				},
+			},
+			CheckedAt: time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC),
+		},
+	}
+
+	view := m.viewHistory(120)
+	for _, want := range []string{
+		"Selected Run",
+		"Logical Upload: failed",
+		"Final Outcome: logical backup upload failed: s3 unavailable",
+		"Failure Reason: logical backup upload failed: s3 unavailable",
+		"Upload Error: s3 unavailable",
+		"Last Validation",
+		"Mode: sandbox restore test",
+		"pf_central: failed (row count mismatch)",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected history view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestBackupDoneViewShowsDerivedFinalOutcomeForPartialRun(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	m.backupStep = stepDone
+	m.runResult = &backupapp.RunResult{
+		RunID:               "run-2",
+		Status:              "partial",
+		RunFolder:           "/tmp/run-2",
+		LogFile:             "/tmp/run-2.log",
+		DatabasesTotal:      4,
+		DatabasesSucceeded:  3,
+		DatabasesFailed:     1,
+		FailureReason:       "1 of 4 database backups failed",
+		LogicalUploadStatus: "success",
+	}
+
+	view := m.viewBackup(120)
+	for _, want := range []string{
+		"Run ID: run-2",
+		"Databases: 3/4 succeeded",
+		"Final Outcome: 1 of 4 database backups failed",
+		"Failure Reason: 1 of 4 database backups failed",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected backup done view to contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
+func TestHealthViewShowsDerivedFinalOutcomeForLatestRun(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	m.width = 160
+	m.height = 60
+	m.healthView.Width = 220
+	m.healthView.Height = 100
+	m.healthLoaded = true
+	m.health = backupapp.HealthReport{
+		DailyLogPath: "/tmp/2026-06-24.log",
+		Logical:      backupapp.HealthCheck{Name: "logical", Status: "ok", Message: "ok"},
+		Physical:     backupapp.HealthCheck{Name: "physical", Status: "ok", Message: "ok"},
+		Metrics:      backupapp.HealthCheck{Name: "metrics", Status: "ok", Message: "ok"},
+		Runtime: backupapp.RuntimeProfile{
+			CurrentUser:      "developer",
+			ExecutionSource:  "runner",
+			SchedulerContext: "user-level scheduled runner",
+			AuditChecklist: []string{
+				"Inspect root crontab and /etc/cron.* for backup commands.",
+			},
+		},
+		RestoreVerification: backupapp.RestoreVerificationProfile{
+			RestoreTestEnabled: true,
+			ExactRowCounts:     true,
+			SampleDataChecks:   true,
+			SampleDataRows:     25,
+		},
+		LatestRun: &backupapp.LatestRunInfo{
+			RunID:                    "run-3",
+			Status:                   "failed",
+			Timestamp:                time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC),
+			FailureReason:            "logical upload failed: s3 unavailable",
+			LogicalUploadStatus:      "failed",
+			LogicalUploadError:       "s3 unavailable",
+			AdaptiveLoadPerCPU:       0.52,
+			AdaptiveLogicalParallel:  2,
+			AdaptivePhysicalParallel: 3,
+			AdaptiveXbcloudParallel:  1,
+		},
+	}
+
+	view := m.viewHealth(140)
+	if !strings.Contains(view, "Final Outcome: logical upload failed: s3 unavailable") {
+		t.Fatalf("expected health view to show final outcome, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Failure Reason: logical upload failed: s3 unavailable") {
+		t.Fatalf("expected health view to show failure reason, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Adaptive Tuning: load/cpu=0.520 logical=2 physical=3 xbcloud=1") {
+		t.Fatalf("expected health view to show xbcloud adaptive tuning, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Scheduler Context: user-level scheduled runner") {
+		t.Fatalf("expected health view to show scheduler context, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Runtime Audit") || !strings.Contains(view, "- Inspect root crontab and /etc/cron.* for backup commands.") {
+		t.Fatalf("expected health view to show runtime audit checklist, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Restore Verification: restore_test=true exact_rows=true sample_checks=true sample_rows=25") {
+		t.Fatalf("expected health view to show restore verification profile, got:\n%s", view)
+	}
+}
+
 func zeroConfigForTUITest() backupapp.Config {
 	return backupapp.Config{
 		LogicalSchedule:  "daily@02:00",
 		PhysicalSchedule: "weekly@sun,02:00",
-		RetentionDaily: 7,
-		BackupDir:      "/tmp",
+		RetentionDaily:   7,
+		BackupDir:        "/tmp",
+		SampleDataRows:   50,
 	}
 }

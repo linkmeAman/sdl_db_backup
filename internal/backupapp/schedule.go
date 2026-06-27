@@ -20,7 +20,7 @@ func parseScheduleTimestamp(raw string) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	return parsed
+	return parsed.Local()
 }
 
 func loadScheduleState(path string) scheduleState {
@@ -127,6 +127,42 @@ func latestDueDailyTarget(now time.Time, times []time.Duration) (time.Time, bool
 	return time.Time{}, false
 }
 
+func nextDailyTargetAfter(after time.Time, times []time.Duration) (time.Time, bool) {
+	if len(times) == 0 {
+		return time.Time{}, false
+	}
+
+	dayStart := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, after.Location())
+	for _, tod := range times {
+		target := dayStart.Add(tod)
+		if target.After(after) {
+			return target, true
+		}
+	}
+
+	return dayStart.Add(24 * time.Hour).Add(times[0]), true
+}
+
+func latestDueWeeklyTarget(now time.Time, weekday time.Weekday, hour int, minute int) (time.Time, bool) {
+	daysBack := (7 + int(now.Weekday()) - int(weekday)) % 7
+	targetDate := now.AddDate(0, 0, -daysBack)
+	target := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), hour, minute, 0, 0, now.Location())
+	if now.Before(target) {
+		return time.Time{}, false
+	}
+	return target, true
+}
+
+func nextWeeklyTargetAfter(after time.Time, weekday time.Weekday, hour int, minute int) time.Time {
+	daysAhead := (7 + int(weekday) - int(after.Weekday())) % 7
+	targetDate := after.AddDate(0, 0, daysAhead)
+	target := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), hour, minute, 0, 0, after.Location())
+	if !target.After(after) {
+		target = target.AddDate(0, 0, 7)
+	}
+	return target
+}
+
 func parseCSVList(raw string) []string {
 	items := []string{}
 	for _, part := range strings.Split(raw, ",") {
@@ -210,15 +246,22 @@ func evaluateSchedule(now time.Time, raw string, lastSuccess time.Time) (bool, s
 		if err != nil {
 			return false, "", fmt.Errorf("invalid schedule %q: %v", raw, err)
 		}
-		target, ok := latestDueDailyTarget(now, times)
-		if !ok {
-			nextTarget := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(times[0])
-			return false, fmt.Sprintf("schedule=%s waiting until %s", raw, nextTarget.Format(time.RFC3339)), nil
-		}
-		if lastSuccess.IsZero() || lastSuccess.Before(target) {
+		if lastSuccess.IsZero() {
+			target, ok := latestDueDailyTarget(now, times)
+			if !ok {
+				nextTarget := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(times[0])
+				return false, fmt.Sprintf("schedule=%s waiting until %s", raw, nextTarget.Format(time.RFC3339)), nil
+			}
 			return true, fmt.Sprintf("schedule=%s due at %s", raw, target.Format(time.RFC3339)), nil
 		}
-		return false, fmt.Sprintf("schedule=%s already satisfied for %s", raw, target.Format(time.RFC3339)), nil
+		nextTarget, ok := nextDailyTargetAfter(lastSuccess, times)
+		if !ok {
+			return false, "", fmt.Errorf("invalid schedule %q: expected at least one HH:MM time", raw)
+		}
+		if !now.Before(nextTarget) {
+			return true, fmt.Sprintf("schedule=%s due at %s", raw, nextTarget.Format(time.RFC3339)), nil
+		}
+		return false, fmt.Sprintf("schedule=%s next due at %s", raw, nextTarget.Format(time.RFC3339)), nil
 	}
 
 	if strings.HasPrefix(schedule, "weekly") {
@@ -238,17 +281,19 @@ func evaluateSchedule(now time.Time, raw string, lastSuccess time.Time) (bool, s
 		if err != nil {
 			return false, "", fmt.Errorf("invalid schedule %q: %v", raw, err)
 		}
-		daysBack := (7 + int(now.Weekday()) - int(weekday)) % 7
-		targetDate := now.AddDate(0, 0, -daysBack)
-		target := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), hour, minute, 0, 0, now.Location())
-		if now.Before(target) {
-			nextTarget := target
-			return false, fmt.Sprintf("schedule=%s waiting until %s", raw, nextTarget.Format(time.RFC3339)), nil
-		}
-		if lastSuccess.IsZero() || lastSuccess.Before(target) {
+		if lastSuccess.IsZero() {
+			target, ok := latestDueWeeklyTarget(now, weekday, hour, minute)
+			if !ok {
+				nextTarget := nextWeeklyTargetAfter(now.Add(-time.Nanosecond), weekday, hour, minute)
+				return false, fmt.Sprintf("schedule=%s waiting until %s", raw, nextTarget.Format(time.RFC3339)), nil
+			}
 			return true, fmt.Sprintf("schedule=%s due at %s", raw, target.Format(time.RFC3339)), nil
 		}
-		return false, fmt.Sprintf("schedule=%s already satisfied for %s", raw, target.Format(time.RFC3339)), nil
+		nextTarget := nextWeeklyTargetAfter(lastSuccess, weekday, hour, minute)
+		if !now.Before(nextTarget) {
+			return true, fmt.Sprintf("schedule=%s due at %s", raw, nextTarget.Format(time.RFC3339)), nil
+		}
+		return false, fmt.Sprintf("schedule=%s next due at %s", raw, nextTarget.Format(time.RFC3339)), nil
 	}
 
 	return false, "", fmt.Errorf("invalid schedule %q: supported values are always, disabled, daily@HH:MM[,HH:MM...], weekly@day,HH:MM, interval@24h", raw)

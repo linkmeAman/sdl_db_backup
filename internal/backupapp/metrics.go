@@ -17,10 +17,9 @@ const backupMetricsFileMode = 0o644
 const backupMetricsUpdateInterval = 5 * time.Second
 
 // metricsLabelString builds the Prometheus label set for all metrics emitted
-// by this tool. The job and service labels default to "sdl_db_backup" and
-// "mysql" respectively. The env label is only appended when non-empty, so
-// operators who have not set BACKUP_METRICS_ENV get a clean label set without
-// an empty env="" label cluttering their Prometheus data.
+// by this tool. The default label set preserves the original monitoring
+// contract: job="sdl_db_backup", service="mysql", and env="pilot". Region is
+// optional and only emitted when configured.
 func metricsLabelString(cfg config) string {
 	job := cfg.MetricsJob
 	if job == "" {
@@ -31,12 +30,12 @@ func metricsLabelString(cfg config) string {
 		service = "mysql"
 	}
 	env := strings.TrimSpace(cfg.MetricsEnv)
+	if env == "" {
+		env = "pilot"
+	}
 	region := strings.TrimSpace(cfg.MetricsRegion)
 
-	labels := []string{fmt.Sprintf(`job=%q`, job), fmt.Sprintf(`service=%q`, service)}
-	if env != "" {
-		labels = append(labels, fmt.Sprintf(`env=%q`, env))
-	}
+	labels := []string{fmt.Sprintf(`job=%q`, job), fmt.Sprintf(`service=%q`, service), fmt.Sprintf(`env=%q`, env)}
 	if region != "" {
 		labels = append(labels, fmt.Sprintf(`region=%q`, region))
 	}
@@ -44,28 +43,35 @@ func metricsLabelString(cfg config) string {
 }
 
 type backupMetricsSnapshot struct {
-	RunTimestamp               int64
-	SuccessTimestamp           int64
-	DurationSeconds            float64
-	SizeBytes                  int64
-	Status                     int
-	UploadSuccess              int
-	MetricsWriteSuccess        int
-	CleanupSuccess             int
-	CleanupTimestamp           int64
-	LogicalAttempted           int
-	LogicalStatus              int
-	LogicalTotalDatabases      int
-	LogicalSucceededDatabases  int
-	LogicalFailedDatabases     int
-	PhysicalAttempted          int
-	PhysicalStatus             int
-	PhysicalDurationSeconds    float64
-	RunInProgress              int
-	CurrentRunStartTimestamp   int64
-	CurrentRunDurationSeconds  float64
-	MetricsLastUpdateTimestamp int64
-	LogicalValidationStatus    int
+	RunTimestamp                int64
+	SuccessTimestamp            int64
+	DurationSeconds             float64
+	SizeBytes                   int64
+	Status                      int
+	UploadSuccess               int
+	MetricsWriteSuccess         int
+	CleanupSuccess              int
+	CleanupTimestamp            int64
+	LogicalAttempted            int
+	LogicalStatus               int
+	LogicalTotalDatabases       int
+	LogicalSucceededDatabases   int
+	LogicalFailedDatabases      int
+	PhysicalAttempted           int
+	PhysicalStatus              int
+	PhysicalDurationSeconds     float64
+	AdaptiveLoadPerCPU          float64
+	AdaptiveLogicalParallel     int
+	AdaptiveXtrabackupParallel  int
+	AdaptiveXbcloudParallel     int
+	PhysicalRetryCount          int
+	PhysicalRateLimitRetryCount int
+	RunInProgress               int
+	CurrentRunStartTimestamp    int64
+	CurrentRunDurationSeconds   float64
+	MetricsLastUpdateTimestamp  int64
+	LogicalValidationStatus     int
+	DatabaseRowCounts           map[string]int64
 }
 
 type ObservabilityReport struct {
@@ -91,6 +97,14 @@ func resolvedMetricsFilePath(path string) string {
 func buildFinalBackupMetricsSnapshot(cfg config, record runRecord, startedAt time.Time, logicalDue bool, physicalDue bool, uploadRequired bool, uploadSucceeded bool) backupMetricsSnapshot {
 	runEndedAt := time.Now().UTC()
 	previous := readExistingBackupMetricsSnapshot(cfg.MetricsFile)
+	if record.Status == "skipped" {
+		previous.RunInProgress = 0
+		previous.CurrentRunStartTimestamp = 0
+		previous.CurrentRunDurationSeconds = 0
+		previous.MetricsLastUpdateTimestamp = runEndedAt.Unix()
+		return previous
+	}
+
 	successTimestamp := readLastSuccessTimestamp(cfg.MetricsFile)
 	status := 0
 	if record.Status == "success" && (!uploadRequired || uploadSucceeded) {
@@ -129,6 +143,8 @@ func buildFinalBackupMetricsSnapshot(cfg config, record runRecord, startedAt tim
 	physicalAttempted := 0
 	physicalStatus := 0
 	physicalDurationSeconds := 0.0
+	adaptivePhysicalParallel := record.AdaptivePhysicalParallel
+	adaptiveXbcloudParallel := record.AdaptiveXbcloudParallel
 	if physicalDue {
 		physicalAttempted = 1
 		if record.PhysicalBackup != nil && record.PhysicalBackup.Status == "success" {
@@ -136,31 +152,52 @@ func buildFinalBackupMetricsSnapshot(cfg config, record runRecord, startedAt tim
 		}
 		if record.PhysicalBackup != nil {
 			physicalDurationSeconds = parseMetricDurationSeconds(record.PhysicalBackup.Duration)
+			if record.PhysicalBackup.XtrabackupParallel > 0 {
+				adaptivePhysicalParallel = record.PhysicalBackup.XtrabackupParallel
+			}
+			if record.PhysicalBackup.XbcloudParallel > 0 {
+				adaptiveXbcloudParallel = record.PhysicalBackup.XbcloudParallel
+			}
+		}
+	}
+
+	dbRowCounts := make(map[string]int64)
+	for _, res := range record.Results {
+		if res.RowCounts > 0 {
+			dbRowCounts[res.Name] = res.RowCounts
 		}
 	}
 
 	return backupMetricsSnapshot{
-		RunTimestamp:               runEndedAt.Unix(),
-		SuccessTimestamp:           successTimestamp,
-		DurationSeconds:            time.Since(startedAt).Seconds(),
-		SizeBytes:                  totalLogicalArtifactSize(record.Results),
-		Status:                     status,
-		UploadSuccess:              uploadSuccess,
-		MetricsWriteSuccess:        1,
-		CleanupSuccess:             cleanupSuccess,
-		CleanupTimestamp:           cleanupTimestamp,
-		LogicalAttempted:           logicalAttempted,
-		LogicalStatus:              logicalStatus,
-		LogicalTotalDatabases:      logicalTotalDatabases,
-		LogicalSucceededDatabases:  logicalSucceededDatabases,
-		LogicalFailedDatabases:     logicalFailedDatabases,
-		PhysicalAttempted:          physicalAttempted,
-		PhysicalStatus:             physicalStatus,
-		PhysicalDurationSeconds:    physicalDurationSeconds,
-		RunInProgress:              0,
-		CurrentRunStartTimestamp:   0,
-		CurrentRunDurationSeconds:  0,
-		MetricsLastUpdateTimestamp: runEndedAt.Unix(),
+		RunTimestamp:                runEndedAt.Unix(),
+		SuccessTimestamp:            successTimestamp,
+		DurationSeconds:             time.Since(startedAt).Seconds(),
+		SizeBytes:                   totalLogicalArtifactSize(record.Results),
+		Status:                      status,
+		UploadSuccess:               uploadSuccess,
+		MetricsWriteSuccess:         1,
+		CleanupSuccess:              cleanupSuccess,
+		CleanupTimestamp:            cleanupTimestamp,
+		LogicalValidationStatus:     previous.LogicalValidationStatus,
+		LogicalAttempted:            logicalAttempted,
+		LogicalStatus:               logicalStatus,
+		LogicalTotalDatabases:       logicalTotalDatabases,
+		LogicalSucceededDatabases:   logicalSucceededDatabases,
+		LogicalFailedDatabases:      logicalFailedDatabases,
+		PhysicalAttempted:           physicalAttempted,
+		PhysicalStatus:              physicalStatus,
+		PhysicalDurationSeconds:     physicalDurationSeconds,
+		AdaptiveLoadPerCPU:          record.AdaptiveLoadPerCPU,
+		AdaptiveLogicalParallel:     record.AdaptiveLogicalParallel,
+		AdaptiveXtrabackupParallel:  adaptivePhysicalParallel,
+		AdaptiveXbcloudParallel:     adaptiveXbcloudParallel,
+		PhysicalRetryCount:          physicalRetryCount(record.PhysicalBackup),
+		PhysicalRateLimitRetryCount: physicalRateLimitRetryCount(record.PhysicalBackup),
+		RunInProgress:               0,
+		CurrentRunStartTimestamp:    0,
+		CurrentRunDurationSeconds:   0,
+		MetricsLastUpdateTimestamp:  runEndedAt.Unix(),
+		DatabaseRowCounts:           dbRowCounts,
 	}
 }
 
@@ -193,6 +230,20 @@ func parseMetricDurationSeconds(raw string) float64 {
 	return duration.Seconds()
 }
 
+func physicalRetryCount(result *physicalBackupResult) int {
+	if result == nil || result.Attempts < 1 {
+		return 0
+	}
+	return result.Attempts
+}
+
+func physicalRateLimitRetryCount(result *physicalBackupResult) int {
+	if result == nil || result.RateLimitRetries < 0 {
+		return 0
+	}
+	return result.RateLimitRetries
+}
+
 func readLastSuccessTimestamp(path string) int64 {
 	file, err := os.Open(path)
 	if err != nil {
@@ -221,11 +272,16 @@ func readLastSuccessTimestamp(path string) int64 {
 func readExistingBackupMetricsSnapshot(path string) backupMetricsSnapshot {
 	file, err := os.Open(path)
 	if err != nil {
-		return backupMetricsSnapshot{}
+		return backupMetricsSnapshot{
+			LogicalValidationStatus: -1,
+		}
 	}
 	defer file.Close()
 
-	snapshot := backupMetricsSnapshot{}
+	snapshot := backupMetricsSnapshot{
+		LogicalValidationStatus: -1,
+		DatabaseRowCounts: make(map[string]int64),
+	}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -276,6 +332,18 @@ func readExistingBackupMetricsSnapshot(path string) backupMetricsSnapshot {
 			snapshot.PhysicalStatus, _ = strconv.Atoi(value)
 		case "backup_physical_last_duration_seconds":
 			snapshot.PhysicalDurationSeconds, _ = strconv.ParseFloat(value, 64)
+		case "backup_adaptive_load_per_cpu":
+			snapshot.AdaptiveLoadPerCPU, _ = strconv.ParseFloat(value, 64)
+		case "backup_adaptive_logical_parallel":
+			snapshot.AdaptiveLogicalParallel, _ = strconv.Atoi(value)
+		case "backup_adaptive_xtrabackup_parallel":
+			snapshot.AdaptiveXtrabackupParallel, _ = strconv.Atoi(value)
+		case "backup_adaptive_xbcloud_parallel":
+			snapshot.AdaptiveXbcloudParallel, _ = strconv.Atoi(value)
+		case "backup_physical_retry_count":
+			snapshot.PhysicalRetryCount, _ = strconv.Atoi(value)
+		case "backup_physical_rate_limit_retry_count":
+			snapshot.PhysicalRateLimitRetryCount, _ = strconv.Atoi(value)
 		case "backup_run_in_progress":
 			snapshot.RunInProgress, _ = strconv.Atoi(value)
 		case "backup_current_run_start_timestamp":
@@ -284,6 +352,35 @@ func readExistingBackupMetricsSnapshot(path string) backupMetricsSnapshot {
 			snapshot.CurrentRunDurationSeconds, _ = strconv.ParseFloat(value, 64)
 		case "backup_metrics_last_update_timestamp":
 			snapshot.MetricsLastUpdateTimestamp, _ = strconv.ParseInt(value, 10, 64)
+		case "backup_logical_validation_last_status":
+			snapshot.LogicalValidationStatus, _ = strconv.Atoi(value)
+		default:
+			if strings.HasPrefix(name, "backup_database_row_count") {
+				// line looks like: backup_database_row_count{job="sdl_db_backup",service="mysql",env="pilot",database="db1"} 123
+				// or maybe just backup_database_row_count{...,database="db1"}
+				if dbIdx := strings.Index(name, `database="`); dbIdx >= 0 {
+					startIdx := dbIdx + len(`database="`)
+					endIdx := strings.IndexByte(name[startIdx:], '"')
+					if endIdx >= 0 {
+						dbName := name[startIdx : startIdx+endIdx]
+						snapshot.DatabaseRowCounts[dbName], _ = strconv.ParseInt(value, 10, 64)
+					}
+				} else {
+					// Fallback if parsed weirdly (name stripped of braces earlier)
+					// wait, we stripped braces earlier:
+					// if brace := strings.IndexByte(name, '{'); brace >= 0 { name = name[:brace] }
+					// So name is exactly "backup_database_row_count".
+					// The original line has the labels. Let's parse from line.
+					if dbIdx := strings.Index(line, `database="`); dbIdx >= 0 {
+						startIdx := dbIdx + len(`database="`)
+						endIdx := strings.IndexByte(line[startIdx:], '"')
+						if endIdx >= 0 {
+							dbName := line[startIdx : startIdx+endIdx]
+							snapshot.DatabaseRowCounts[dbName], _ = strconv.ParseInt(value, 10, 64)
+						}
+					}
+				}
+			}
 		}
 	}
 	return snapshot
@@ -388,6 +485,36 @@ func writeBackupMetricsFile(path string, snapshot backupMetricsSnapshot, labels 
 			Value: strconv.FormatFloat(snapshot.PhysicalDurationSeconds, 'f', 3, 64),
 		},
 		{
+			Name:  "backup_adaptive_load_per_cpu",
+			Help:  "Observed 1-minute host load average divided by CPU count for the most recent run, or 0 when unavailable.",
+			Value: strconv.FormatFloat(snapshot.AdaptiveLoadPerCPU, 'f', 3, 64),
+		},
+		{
+			Name:  "backup_adaptive_logical_parallel",
+			Help:  "Logical backup parallelism chosen for the most recent run after adaptive tuning.",
+			Value: strconv.Itoa(snapshot.AdaptiveLogicalParallel),
+		},
+		{
+			Name:  "backup_adaptive_xtrabackup_parallel",
+			Help:  "Physical backup xtrabackup parallelism chosen for the most recent run after adaptive tuning.",
+			Value: strconv.Itoa(snapshot.AdaptiveXtrabackupParallel),
+		},
+		{
+			Name:  "backup_adaptive_xbcloud_parallel",
+			Help:  "Physical backup xbcloud upload parallelism chosen for the most recent run after adaptive tuning.",
+			Value: strconv.Itoa(snapshot.AdaptiveXbcloudParallel),
+		},
+		{
+			Name:  "backup_physical_retry_count",
+			Help:  "Total number of physical backup attempts used in the most recent run.",
+			Value: strconv.Itoa(snapshot.PhysicalRetryCount),
+		},
+		{
+			Name:  "backup_physical_rate_limit_retry_count",
+			Help:  "Number of physical backup retries caused by xbcloud or S3 rate limiting in the most recent run.",
+			Value: strconv.Itoa(snapshot.PhysicalRateLimitRetryCount),
+		},
+		{
 			Name:  "backup_run_in_progress",
 			Help:  "Whether a backup run is currently in progress: 1 for running, 0 for idle.",
 			Value: strconv.Itoa(snapshot.RunInProgress),
@@ -416,6 +543,14 @@ func writeBackupMetricsFile(path string, snapshot backupMetricsSnapshot, labels 
 		fmt.Fprintf(&body, "# HELP %s %s\n", metric.Name, metric.Help)
 		fmt.Fprintf(&body, "# TYPE %s gauge\n", metric.Name)
 		fmt.Fprintf(&body, "%s{%s} %s\n", metric.Name, labels, metric.Value)
+	}
+
+	if len(snapshot.DatabaseRowCounts) > 0 {
+		fmt.Fprintf(&body, "# HELP backup_database_row_count Number of rows in the database (exact or estimated).\n")
+		fmt.Fprintf(&body, "# TYPE backup_database_row_count gauge\n")
+		for dbName, count := range snapshot.DatabaseRowCounts {
+			fmt.Fprintf(&body, "backup_database_row_count{%s,database=\"%s\"} %d\n", labels, dbName, count)
+		}
 	}
 
 	tempFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
@@ -475,6 +610,12 @@ func snapshotValueMap(snapshot backupMetricsSnapshot) map[string]string {
 		"backup_physical_last_attempted":          strconv.Itoa(snapshot.PhysicalAttempted),
 		"backup_physical_last_status":             strconv.Itoa(snapshot.PhysicalStatus),
 		"backup_physical_last_duration_seconds":   strconv.FormatFloat(snapshot.PhysicalDurationSeconds, 'f', 3, 64),
+		"backup_adaptive_load_per_cpu":            strconv.FormatFloat(snapshot.AdaptiveLoadPerCPU, 'f', 3, 64),
+		"backup_adaptive_logical_parallel":        strconv.Itoa(snapshot.AdaptiveLogicalParallel),
+		"backup_adaptive_xtrabackup_parallel":     strconv.Itoa(snapshot.AdaptiveXtrabackupParallel),
+		"backup_adaptive_xbcloud_parallel":        strconv.Itoa(snapshot.AdaptiveXbcloudParallel),
+		"backup_physical_retry_count":             strconv.Itoa(snapshot.PhysicalRetryCount),
+		"backup_physical_rate_limit_retry_count":  strconv.Itoa(snapshot.PhysicalRateLimitRetryCount),
 		"backup_run_in_progress":                  strconv.Itoa(snapshot.RunInProgress),
 		"backup_current_run_start_timestamp":      strconv.FormatInt(snapshot.CurrentRunStartTimestamp, 10),
 		"backup_current_run_duration_seconds":     strconv.FormatFloat(snapshot.CurrentRunDurationSeconds, 'f', 3, 64),
@@ -592,9 +733,10 @@ func startRealtimeBackupMetricsEmitter(cfg config, startedAt time.Time) func() {
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 
+	emitInProgressBackupMetrics(cfg, startedAt)
+
 	go func() {
 		defer close(doneCh)
-		emitInProgressBackupMetrics(cfg, startedAt)
 		ticker := time.NewTicker(backupMetricsUpdateInterval)
 		defer ticker.Stop()
 		for {

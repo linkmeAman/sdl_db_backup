@@ -38,6 +38,11 @@ type config struct {
 	RetentionMonthly        int
 	LogicalEnabled          bool
 	LogicalTimeoutPerDB     time.Duration
+	ExactRowCounts          bool
+	SampleDataChecks        bool
+	SampleDataRows          int
+	LogicalParallel         int
+	LogicalGzipLevel        int
 	LogicalS3UploadEnabled  bool
 	LogicalSchedule         string
 	EncryptionKey           string
@@ -62,6 +67,8 @@ type config struct {
 	S3KeyID                 string
 	S3KeySecret             string
 	XbcloudBin              string
+	XbcloudParallel         int
+	XbcloudFIFOStreams      int
 	PhysicalEnabled         bool
 	PhysicalS3UploadEnabled bool
 	XtrabackupBin           string
@@ -304,6 +311,11 @@ func loadConfigFromValues(values map[string]string) config {
 		RetentionMonthly:        getMapInt(values, "BACKUP_RETENTION_MONTHLY", 12),
 		LogicalEnabled:          getMapBool(values, "BACKUP_LOGICAL_ENABLED", true),
 		LogicalTimeoutPerDB:     logicalTimeoutPerDB,
+		ExactRowCounts:          getMapBool(values, "BACKUP_EXACT_ROW_COUNTS", false),
+		SampleDataChecks:        getMapBool(values, "BACKUP_SAMPLE_DATA_CHECKS", false),
+		SampleDataRows:          max(1, getMapInt(values, "BACKUP_SAMPLE_DATA_ROWS", 50)),
+		LogicalParallel:         getMapInt(values, "BACKUP_LOGICAL_PARALLEL", 2),
+		LogicalGzipLevel:        getMapInt(values, "BACKUP_LOGICAL_GZIP_LEVEL", 1),
 		LogicalS3UploadEnabled:  getMapBool(values, "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", true),
 		LogicalSchedule:         getMapValue(values, "BACKUP_LOGICAL_SCHEDULE", "always"),
 		LogicalDatabases:        parseCSVList(getMapValue(values, "BACKUP_LOGICAL_DATABASES", "")),
@@ -328,6 +340,8 @@ func loadConfigFromValues(values map[string]string) config {
 		S3KeySecret:             s3KeySecret,
 		EncryptionKey:           getMapValue(values, "BACKUP_ENCRYPTION_KEY", ""),
 		XbcloudBin:              getMapValue(values, "BACKUP_XBCLOUD_BIN", "xbcloud"),
+		XbcloudParallel:         getMapInt(values, "BACKUP_XBCLOUD_PARALLEL", 2),
+		XbcloudFIFOStreams:      getMapInt(values, "BACKUP_XBCLOUD_FIFO_STREAMS", 1),
 		PhysicalEnabled:         getMapBool(values, "BACKUP_PHYSICAL_ENABLED", true),
 		PhysicalS3UploadEnabled: getMapBool(values, "BACKUP_PHYSICAL_S3_UPLOAD_ENABLED", true),
 		XtrabackupBin:           getMapValue(values, "BACKUP_XTRABACKUP_BIN", "xtrabackup"),
@@ -345,7 +359,7 @@ func loadConfigFromValues(values map[string]string) config {
 		ExecutionSource:         getMapValue(values, "BACKUP_EXECUTION_SOURCE", "runner"),
 		MetricsJob:              getMapValue(values, "BACKUP_METRICS_JOB", "sdl_db_backup"),
 		MetricsService:          getMapValue(values, "BACKUP_METRICS_SERVICE", "mysql"),
-		MetricsEnv:              getMapValue(values, "BACKUP_METRICS_ENV", ""),
+		MetricsEnv:              getMapValue(values, "BACKUP_METRICS_ENV", "pilot"),
 		MetricsRegion:           getMapValue(values, "BACKUP_METRICS_REGION", ""),
 		RestoreTestEnabled:      strings.ToLower(getMapValue(values, "RESTORE_TEST_ENABLED", "false")) == "true",
 		RestoreTestHost:         getMapValue(values, "RESTORE_TEST_HOST", ""),
@@ -521,10 +535,15 @@ func managedEnvKeys() []string {
 		"BACKUP_RETRY_BASE_DELAY",
 		"BACKUP_RETRY_MAX_DELAY",
 		"BACKUP_LOGICAL_ENABLED",
+		"BACKUP_EXACT_ROW_COUNTS",
+		"BACKUP_SAMPLE_DATA_CHECKS",
+		"BACKUP_SAMPLE_DATA_ROWS",
 		"BACKUP_LOGICAL_SCHEDULE",
 		"BACKUP_LOGICAL_DATABASES",
 		"BACKUP_LOGICAL_TABLES",
 		"BACKUP_LOGICAL_TIMEOUT_PER_DB",
+		"BACKUP_LOGICAL_PARALLEL",
+		"BACKUP_LOGICAL_GZIP_LEVEL",
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED",
 		"BACKUP_PHYSICAL_ENABLED",
 		"BACKUP_PHYSICAL_SCHEDULE",
@@ -550,6 +569,8 @@ func managedEnvKeys() []string {
 		"BACKUP_S3_KEY_ID",
 		"BACKUP_S3_KEY_SECRET",
 		"BACKUP_XBCLOUD_BIN",
+		"BACKUP_XBCLOUD_PARALLEL",
+		"BACKUP_XBCLOUD_FIFO_STREAMS",
 		"BACKUP_XTRABACKUP_BIN",
 		"BACKUP_XTRABACKUP_PARALLEL",
 		"BACKUP_XTRABACKUP_USER",
@@ -565,6 +586,7 @@ func managedEnvKeys() []string {
 		"BACKUP_METRICS_JOB",
 		"BACKUP_METRICS_SERVICE",
 		"BACKUP_METRICS_ENV",
+		"BACKUP_METRICS_REGION",
 	}
 }
 
@@ -586,10 +608,15 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_RETRY_BASE_DELAY":           cfg.RetryBaseDelay.String(),
 		"BACKUP_RETRY_MAX_DELAY":            cfg.RetryMaxDelay.String(),
 		"BACKUP_LOGICAL_ENABLED":            strconv.FormatBool(cfg.LogicalEnabled),
+		"BACKUP_EXACT_ROW_COUNTS":           strconv.FormatBool(cfg.ExactRowCounts),
+		"BACKUP_SAMPLE_DATA_CHECKS":         strconv.FormatBool(cfg.SampleDataChecks),
+		"BACKUP_SAMPLE_DATA_ROWS":           strconv.Itoa(cfg.SampleDataRows),
 		"BACKUP_LOGICAL_SCHEDULE":           cfg.LogicalSchedule,
 		"BACKUP_LOGICAL_DATABASES":          strings.Join(cfg.LogicalDatabases, ","),
 		"BACKUP_LOGICAL_TABLES":             formatTableScope(cfg.LogicalTables),
 		"BACKUP_LOGICAL_TIMEOUT_PER_DB":     cfg.LogicalTimeoutPerDB.String(),
+		"BACKUP_LOGICAL_PARALLEL":           strconv.Itoa(cfg.LogicalParallel),
+		"BACKUP_LOGICAL_GZIP_LEVEL":         strconv.Itoa(cfg.LogicalGzipLevel),
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED":  strconv.FormatBool(cfg.LogicalS3UploadEnabled),
 		"BACKUP_PHYSICAL_ENABLED":           strconv.FormatBool(cfg.PhysicalEnabled),
 		"BACKUP_PHYSICAL_SCHEDULE":          cfg.PhysicalSchedule,
@@ -615,6 +642,8 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_S3_KEY_ID":                  cfg.S3KeyID,
 		"BACKUP_S3_KEY_SECRET":              cfg.S3KeySecret,
 		"BACKUP_XBCLOUD_BIN":                cfg.XbcloudBin,
+		"BACKUP_XBCLOUD_PARALLEL":           strconv.Itoa(cfg.XbcloudParallel),
+		"BACKUP_XBCLOUD_FIFO_STREAMS":       strconv.Itoa(cfg.XbcloudFIFOStreams),
 		"BACKUP_XTRABACKUP_BIN":             cfg.XtrabackupBin,
 		"BACKUP_XTRABACKUP_PARALLEL":        strconv.Itoa(cfg.XtrabackupParallel),
 		"BACKUP_XTRABACKUP_USER":            cfg.XtrabackupUser,

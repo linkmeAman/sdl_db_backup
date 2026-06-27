@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,21 +34,35 @@ func readLatestRunInfo(path string) (*LatestRunInfo, error) {
 			return nil, err
 		}
 		return &LatestRunInfo{
-			Timestamp:          record.Timestamp,
-			RunID:              record.RunID,
-			Status:             record.Status,
-			RunFolder:          record.RunFolder,
-			LogFile:            record.LogFile,
-			FailureReason:      record.FailureReason,
-			CleanupError:       record.CleanupError,
-			Duration:           record.Duration,
-			DatabasesTotal:     record.DatabasesTotal,
-			DatabasesSucceeded: record.DatabasesSucceeded,
-			DatabasesFailed:    record.DatabasesFailed,
-			OSUser:             record.OSUser,
-			ExecutionSource:    record.ExecutionSource,
-			Hostname:           record.Hostname,
-			PID:                record.PID,
+			Timestamp:                record.Timestamp,
+			RunID:                    record.RunID,
+			Status:                   record.Status,
+			RunFolder:                record.RunFolder,
+			LogFile:                  record.LogFile,
+			FinalOutcome:             DeriveFinalOutcome(record.Status, record.DatabasesTotal, record.DatabasesFailed, record.FailureReason, record.CleanupError, record.LogicalUploadError),
+			FailureReason:            record.FailureReason,
+			CleanupError:             record.CleanupError,
+			Duration:                 record.Duration,
+			DatabasesTotal:           record.DatabasesTotal,
+			DatabasesSucceeded:       record.DatabasesSucceeded,
+			DatabasesFailed:          record.DatabasesFailed,
+			LogicalUploadRun:         record.LogicalUploadRun,
+			LogicalUploadStatus:      record.LogicalUploadStatus,
+			LogicalUploadNote:        record.LogicalUploadNote,
+			LogicalUploadError:       record.LogicalUploadError,
+			AdaptiveLoadPerCPU:       record.AdaptiveLoadPerCPU,
+			AdaptiveLogicalParallel:  record.AdaptiveLogicalParallel,
+			AdaptivePhysicalParallel: record.AdaptivePhysicalParallel,
+			AdaptiveXbcloudParallel:  record.AdaptiveXbcloudParallel,
+			AdaptiveTuningReason:     record.AdaptiveTuningReason,
+			ValidationCheckedAt:      record.ValidationCheckedAt,
+			ValidationMode:           record.ValidationMode,
+			ValidationStatus:         record.ValidationStatus,
+			ValidationError:          record.ValidationError,
+			OSUser:                   record.OSUser,
+			ExecutionSource:          record.ExecutionSource,
+			Hostname:                 record.Hostname,
+			PID:                      record.PID,
 		}, nil
 	}
 	return nil, nil
@@ -153,7 +168,74 @@ func probeExistingWritableDir(path string) error {
 	return nil
 }
 
-func checkDirectoryHealth(name, path string) HealthCheck {
+type ownershipDriftFinding struct {
+	RelativePath string
+	UID          uint32
+	GID          uint32
+	Mode         os.FileMode
+}
+
+func scanOwnershipDrift(path string, expectedUID uint32, maxDepth int, maxFindings int, lstat func(string) (os.FileInfo, error)) ([]ownershipDriftFinding, error) {
+	findings := []ownershipDriftFinding{}
+	walkErr := filepath.WalkDir(path, func(current string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if current == path {
+			return nil
+		}
+		rel, err := filepath.Rel(path, current)
+		if err != nil {
+			return err
+		}
+		depth := strings.Count(rel, string(os.PathSeparator))
+		if depth > maxDepth {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		info, err := lstat(current)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil
+		}
+		if stat.Uid == expectedUID {
+			return nil
+		}
+		findings = append(findings, ownershipDriftFinding{
+			RelativePath: rel,
+			UID:          stat.Uid,
+			GID:          stat.Gid,
+			Mode:         info.Mode().Perm(),
+		})
+		if len(findings) >= maxFindings {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if errors.Is(walkErr, fs.SkipAll) {
+		return findings, nil
+	}
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	return findings, nil
+}
+
+func formatOwnershipDrift(findings []ownershipDriftFinding) string {
+	parts := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		parts = append(parts, fmt.Sprintf("%s(uid=%d gid=%d mode=%#o)", finding.RelativePath, finding.UID, finding.GID, finding.Mode.Perm()))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func checkDirectoryHealth(name, path string, detectDrift bool) HealthCheck {
 	check := HealthCheck{Name: name}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -173,6 +255,18 @@ func checkDirectoryHealth(name, path string) HealthCheck {
 	}
 	check.Status = "ok"
 	check.Message = fmt.Sprintf("%s writable (%s)", path, pathOwnershipSummary(info))
+	if detectDrift {
+		findings, err := scanOwnershipDrift(path, uint32(os.Geteuid()), 2, 5, os.Lstat)
+		if err != nil {
+			check.Status = "warn"
+			check.Message = fmt.Sprintf("%s writable but ownership drift scan failed: %v", path, err)
+			return check
+		}
+		if len(findings) > 0 {
+			check.Status = "warn"
+			check.Message = fmt.Sprintf("%s writable but ownership drift detected relative to uid=%d: %s", path, os.Geteuid(), formatOwnershipDrift(findings))
+		}
+	}
 	return check
 }
 
@@ -221,11 +315,17 @@ func GetHealthReport(ctx context.Context, envPath string) (HealthReport, error) 
 		Physical:     checkPhysicalHealth(cfg),
 		Metrics:      checkMetricsHealth(cfg),
 		Directories: []HealthCheck{
-			checkDirectoryHealth("backup_dir", cfg.BackupDir),
-			checkDirectoryHealth("log_dir", cfg.LogDir),
-			checkDirectoryHealth("metrics_dir", filepath.Dir(resolvedMetricsFilePath(cfg.MetricsFile))),
+			checkDirectoryHealth("backup_dir", cfg.BackupDir, true),
+			checkDirectoryHealth("log_dir", cfg.LogDir, true),
+			checkDirectoryHealth("metrics_dir", filepath.Dir(resolvedMetricsFilePath(cfg.MetricsFile)), false),
 		},
 		Observability: GetObservabilityReport(cfg),
+		RestoreVerification: RestoreVerificationProfile{
+			RestoreTestEnabled: cfg.RestoreTestEnabled,
+			ExactRowCounts:     cfg.ExactRowCounts,
+			SampleDataChecks:   cfg.SampleDataChecks,
+			SampleDataRows:     cfg.SampleDataRows,
+		},
 	}
 	runtime, runtimeErr := GetRuntimeProfile(envPath)
 	if runtimeErr == nil {

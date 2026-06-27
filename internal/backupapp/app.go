@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -20,50 +21,78 @@ const runTimestampLayout = "2006-01-02_15-04-05"
 type PhysicalBackupResult = physicalBackupResult
 
 type physicalBackupResult struct {
-	Status    string `json:"status"`
-	TargetDir string `json:"target_dir,omitempty"`
-	Duration  string `json:"duration"`
-	Error     string `json:"error,omitempty"`
+	Status             string `json:"status"`
+	TargetDir          string `json:"target_dir,omitempty"`
+	Duration           string `json:"duration"`
+	Error              string `json:"error,omitempty"`
+	Attempts           int    `json:"attempts,omitempty"`
+	RateLimitRetries   int    `json:"rate_limit_retries,omitempty"`
+	XtrabackupParallel int    `json:"xtrabackup_parallel,omitempty"`
+	XbcloudParallel    int    `json:"xbcloud_parallel,omitempty"`
 }
 
 type DatabaseResult = databaseResult
 
 type databaseResult struct {
-	Name          string `json:"name"`
-	Status        string `json:"status"`
-	Attempts      int    `json:"attempts"`
-	Duration      string `json:"duration"`
-	OutputPath    string `json:"output_path,omitempty"`
-	SizeBytes     int64  `json:"size_bytes,omitempty"`
-	RowCounts     int64  `json:"row_counts,omitempty"`
-	ErrorCategory string `json:"error_category,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Name              string            `json:"name"`
+	Status            string            `json:"status"`
+	Attempts          int               `json:"attempts"`
+	Duration          string            `json:"duration"`
+	OutputPath        string            `json:"output_path,omitempty"`
+	SizeBytes         int64             `json:"size_bytes,omitempty"`
+	ArtifactSHA256    string            `json:"artifact_sha256,omitempty"`
+	SQLSHA256         string            `json:"sql_sha256,omitempty"`
+	TableCount        int64             `json:"table_count,omitempty"`
+	ViewCount         int64             `json:"view_count,omitempty"`
+	TriggerCount      int64             `json:"trigger_count,omitempty"`
+	RoutineCount      int64             `json:"routine_count,omitempty"`
+	EventCount        int64             `json:"event_count,omitempty"`
+	SchemaFingerprint string            `json:"schema_fingerprint,omitempty"`
+	RowCounts         int64             `json:"row_counts,omitempty"`
+	RowCountMode      string            `json:"row_count_mode,omitempty"`
+	TableRowCounts    map[string]int64  `json:"table_row_counts,omitempty"`
+	SampleRowHashes   map[string]string `json:"sample_row_hashes,omitempty"`
+	SampleRowCount    int               `json:"sample_row_count,omitempty"`
+	ErrorCategory     string            `json:"error_category,omitempty"`
+	Error             string            `json:"error,omitempty"`
 }
 
 type RunResult = runRecord
 
 type runRecord struct {
-	Timestamp          time.Time             `json:"timestamp"`
-	RunID              string                `json:"run_id"`
-	Status             string                `json:"status"`
-	BackupDir          string                `json:"backup_dir"`
-	RunFolder          string                `json:"run_folder,omitempty"`
-	LogFile            string                `json:"log_file,omitempty"`
-	FailureReason      string                `json:"failure_reason,omitempty"`
-	CleanupError       string                `json:"cleanup_error,omitempty"`
-	Duration           string                `json:"duration"`
-	DatabasesTotal     int                   `json:"databases_total"`
-	DatabasesSucceeded int                   `json:"databases_succeeded"`
-	DatabasesFailed    int                   `json:"databases_failed"`
-	Results            []databaseResult      `json:"results,omitempty"`
-	PhysicalBackup     *physicalBackupResult `json:"physical_backup,omitempty"`
-	ExitCode           int                   `json:"-"`
-	LogicalUploadRun   bool                  `json:"logical_upload_run,omitempty"`
-	LogicalUploadNote  string                `json:"logical_upload_note,omitempty"`
-	OSUser             string                `json:"os_user,omitempty"`
-	ExecutionSource    string                `json:"execution_source,omitempty"`
-	Hostname           string                `json:"hostname,omitempty"`
-	PID                int                   `json:"pid,omitempty"`
+	Timestamp                time.Time                  `json:"timestamp"`
+	RunID                    string                     `json:"run_id"`
+	Status                   string                     `json:"status"`
+	BackupDir                string                     `json:"backup_dir"`
+	RunFolder                string                     `json:"run_folder,omitempty"`
+	LogFile                  string                     `json:"log_file,omitempty"`
+	FailureReason            string                     `json:"failure_reason,omitempty"`
+	CleanupError             string                     `json:"cleanup_error,omitempty"`
+	Duration                 string                     `json:"duration"`
+	DatabasesTotal           int                        `json:"databases_total"`
+	DatabasesSucceeded       int                        `json:"databases_succeeded"`
+	DatabasesFailed          int                        `json:"databases_failed"`
+	Results                  []databaseResult           `json:"results,omitempty"`
+	PhysicalBackup           *physicalBackupResult      `json:"physical_backup,omitempty"`
+	ExitCode                 int                        `json:"-"`
+	LogicalUploadRun         bool                       `json:"logical_upload_run,omitempty"`
+	LogicalUploadStatus      string                     `json:"logical_upload_status,omitempty"`
+	LogicalUploadNote        string                     `json:"logical_upload_note,omitempty"`
+	LogicalUploadError       string                     `json:"logical_upload_error,omitempty"`
+	AdaptiveLoadPerCPU       float64                    `json:"adaptive_load_per_cpu,omitempty"`
+	AdaptiveLogicalParallel  int                        `json:"adaptive_logical_parallel,omitempty"`
+	AdaptivePhysicalParallel int                        `json:"adaptive_physical_parallel,omitempty"`
+	AdaptiveXbcloudParallel  int                        `json:"adaptive_xbcloud_parallel,omitempty"`
+	AdaptiveTuningReason     string                     `json:"adaptive_tuning_reason,omitempty"`
+	ValidationCheckedAt      time.Time                  `json:"validation_checked_at,omitempty"`
+	ValidationMode           string                     `json:"validation_mode,omitempty"`
+	ValidationStatus         string                     `json:"validation_status,omitempty"`
+	ValidationError          string                     `json:"validation_error,omitempty"`
+	ValidationDatabases      []DatabaseValidationResult `json:"validation_databases,omitempty"`
+	OSUser                   string                     `json:"os_user,omitempty"`
+	ExecutionSource          string                     `json:"execution_source,omitempty"`
+	Hostname                 string                     `json:"hostname,omitempty"`
+	PID                      int                        `json:"pid,omitempty"`
 }
 
 type ManualRunMode string
@@ -151,35 +180,101 @@ type HealthCheck struct {
 	Message string
 }
 
+type RestoreVerificationProfile struct {
+	RestoreTestEnabled bool
+	ExactRowCounts     bool
+	SampleDataChecks   bool
+	SampleDataRows     int
+}
+
 type LatestRunInfo struct {
-	Timestamp          time.Time
-	RunID              string
-	Status             string
-	RunFolder          string
-	LogFile            string
-	FailureReason      string
-	CleanupError       string
-	Duration           string
-	DatabasesTotal     int
-	DatabasesSucceeded int
-	DatabasesFailed    int
-	OSUser             string
-	ExecutionSource    string
-	Hostname           string
-	PID                int
+	Timestamp                time.Time
+	RunID                    string
+	Status                   string
+	RunFolder                string
+	LogFile                  string
+	FinalOutcome             string
+	FailureReason            string
+	CleanupError             string
+	Duration                 string
+	DatabasesTotal           int
+	DatabasesSucceeded       int
+	DatabasesFailed          int
+	LogicalUploadRun         bool
+	LogicalUploadStatus      string
+	LogicalUploadNote        string
+	LogicalUploadError       string
+	AdaptiveLoadPerCPU       float64
+	AdaptiveLogicalParallel  int
+	AdaptivePhysicalParallel int
+	AdaptiveXbcloudParallel  int
+	AdaptiveTuningReason     string
+	ValidationCheckedAt      time.Time
+	ValidationMode           string
+	ValidationStatus         string
+	ValidationError          string
+	OSUser                   string
+	ExecutionSource          string
+	Hostname                 string
+	PID                      int
+}
+
+func DeriveFinalOutcome(status string, databasesTotal int, databasesFailed int, failureReason string, cleanupError string, logicalUploadError string) string {
+	if strings.TrimSpace(failureReason) != "" {
+		return failureReason
+	}
+	if strings.TrimSpace(logicalUploadError) != "" {
+		return "logical upload failed: " + logicalUploadError
+	}
+	if strings.TrimSpace(cleanupError) != "" {
+		if status == "success" {
+			return "backup completed with cleanup issue: " + cleanupError
+		}
+		return "cleanup issue: " + cleanupError
+	}
+	switch status {
+	case "partial":
+		if databasesFailed > 0 && databasesTotal > 0 {
+			return fmt.Sprintf("%d of %d database backups failed", databasesFailed, databasesTotal)
+		}
+		return "backup completed partially"
+	case "failed":
+		if databasesFailed > 0 && databasesTotal > 0 {
+			return fmt.Sprintf("%d of %d database backups failed", databasesFailed, databasesTotal)
+		}
+		if databasesTotal == 0 {
+			return "backup failed before any database finished"
+		}
+		return "backup failed"
+	default:
+		return ""
+	}
+}
+
+type APIRunResult struct {
+	RunResult
+	FinalOutcome string `json:"final_outcome,omitempty"`
+}
+
+func BuildAPIRunResult(run RunResult) APIRunResult {
+	return APIRunResult{
+		RunResult:    run,
+		FinalOutcome: DeriveFinalOutcome(run.Status, run.DatabasesTotal, run.DatabasesFailed, run.FailureReason, run.CleanupError, run.LogicalUploadError),
+	}
 }
 
 type HealthReport struct {
-	ConfigPath    string
-	RunLogPath    string
-	DailyLogPath  string
-	LatestRun     *LatestRunInfo
-	Logical       HealthCheck
-	Physical      HealthCheck
-	Metrics       HealthCheck
-	Directories   []HealthCheck
-	Observability ObservabilityReport
-	Runtime       RuntimeProfile
+	ConfigPath          string
+	RunLogPath          string
+	DailyLogPath        string
+	LatestRun           *LatestRunInfo
+	Logical             HealthCheck
+	Physical            HealthCheck
+	Metrics             HealthCheck
+	Directories         []HealthCheck
+	Observability       ObservabilityReport
+	Runtime             RuntimeProfile
+	RestoreVerification RestoreVerificationProfile
 }
 
 type scheduleState struct {
@@ -192,10 +287,154 @@ type countingWriter struct {
 	bytes  int64
 }
 
+type logicalBackupTask struct {
+	index           int
+	dbName          string
+	outputPath      string
+	tables          []string
+	immediateResult *databaseResult
+}
+
+type logicalBackupOutcome struct {
+	index  int
+	result databaseResult
+}
+
 func (cw *countingWriter) Write(p []byte) (int, error) {
 	n, err := cw.writer.Write(p)
 	cw.bytes += int64(n)
 	return n, err
+}
+
+func markLogicalUploadSuccess(record *runRecord) {
+	record.LogicalUploadRun = true
+	record.LogicalUploadStatus = "success"
+	record.LogicalUploadNote = ""
+	record.LogicalUploadError = ""
+}
+
+func markLogicalUploadSkipped(record *runRecord, note string) {
+	record.LogicalUploadRun = false
+	record.LogicalUploadStatus = "skipped"
+	record.LogicalUploadNote = note
+	record.LogicalUploadError = ""
+}
+
+func markLogicalUploadFailure(record *runRecord, err error) {
+	record.LogicalUploadRun = true
+	record.LogicalUploadStatus = "failed"
+	record.LogicalUploadNote = ""
+	record.LogicalUploadError = err.Error()
+	if record.FailureReason == "" {
+		record.FailureReason = "logical backup upload failed: " + err.Error()
+	}
+	if record.Status == "success" {
+		record.Status = "failed"
+	}
+}
+
+func prepareLogicalBackupTasks(cfg config, runFolder string, databases []string) ([]logicalBackupTask, error) {
+	tasks := make([]logicalBackupTask, 0, len(databases))
+	for index, dbName := range databases {
+		ext := ".sql.gz"
+		if cfg.EncryptionKey != "" {
+			ext = ".sql.gz.enc"
+		}
+		outputPath := filepath.Join(runFolder, dbName+ext)
+		log.Printf("[%d/%d] processing %s", index+1, len(databases), dbName)
+		requestedTables := selectedTablesForDatabase(cfg, dbName)
+		tables := requestedTables
+		if len(requestedTables) > 0 {
+			availableTables, missingTables, err := resolveSelectedTablesForDatabase(cfg, dbName)
+			if err != nil {
+				log.Printf("warning: could not validate selected tables for database=%s: %v", dbName, err)
+				log.Printf("database=%s: skipping table-scoped dump so the backup can continue without errors", dbName)
+				tables = nil
+			} else {
+				tables = availableTables
+				if len(missingTables) > 0 {
+					log.Printf("database=%s: skipping missing tables from logical backup: %s", dbName, strings.Join(missingTables, ", "))
+				}
+				if len(tables) == 0 {
+					log.Printf("database=%s: no requested tables remain after validation; skipping this database", dbName)
+					immediate := databaseResult{
+						Name:     dbName,
+						Status:   "success",
+						Duration: "0s",
+					}
+					tasks = append(tasks, logicalBackupTask{
+						index:           index,
+						dbName:          dbName,
+						outputPath:      outputPath,
+						immediateResult: &immediate,
+					})
+					continue
+				}
+			}
+		}
+		tasks = append(tasks, logicalBackupTask{
+			index:      index,
+			dbName:     dbName,
+			outputPath: outputPath,
+			tables:     tables,
+		})
+	}
+	return tasks, nil
+}
+
+func executeLogicalBackupTasks(cfg config, tasks []logicalBackupTask) []databaseResult {
+	results := make([]databaseResult, len(tasks))
+	if len(tasks) == 0 {
+		return results
+	}
+
+	workers := normalizedLogicalParallelism(cfg.LogicalParallel)
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+	if workers == 1 {
+		for _, task := range tasks {
+			if task.immediateResult != nil {
+				results[task.index] = *task.immediateResult
+				continue
+			}
+			results[task.index] = dumpWithRetry(cfg, task.dbName, task.outputPath, task.tables)
+		}
+		return results
+	}
+
+	jobs := make(chan logicalBackupTask)
+	outcomes := make(chan logicalBackupOutcome, len(tasks))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range jobs {
+				if task.immediateResult != nil {
+					outcomes <- logicalBackupOutcome{index: task.index, result: *task.immediateResult}
+					continue
+				}
+				outcomes <- logicalBackupOutcome{
+					index:  task.index,
+					result: dumpWithRetry(cfg, task.dbName, task.outputPath, task.tables),
+				}
+			}
+		}()
+	}
+
+	for _, task := range tasks {
+		jobs <- task
+	}
+	close(jobs)
+	wg.Wait()
+	close(outcomes)
+
+	for outcome := range outcomes {
+		results[outcome.index] = outcome.result
+	}
+	return results
 }
 
 var systemDBs = []string{
@@ -208,6 +447,14 @@ var systemDBs = []string{
 func BuildManualRunConfig(base Config, opts ManualRunOptions) (Config, Preview, error) {
 	cfg := base
 	preview := Preview{}
+	currentUser := currentOSUser()
+	execSource := normalizedExecutionSource(cfg.ExecutionSource)
+
+	preview.Lines = append(preview.Lines,
+		fmt.Sprintf("Invocation context: %s", schedulerContext(currentUser, execSource)),
+		fmt.Sprintf("Runtime user: %s", currentUser),
+		fmt.Sprintf("Execution source: %s", execSource),
+	)
 
 	if opts.Mode == "" {
 		opts.Mode = ManualRunBoth
@@ -263,6 +510,9 @@ func BuildManualRunConfig(base Config, opts ManualRunOptions) (Config, Preview, 
 		cfg.PreflightOnly = true
 		preview.Lines = append(preview.Lines, "Run type: preflight only")
 		preview.Warnings = append(preview.Warnings, "Preflight-only mode validates MySQL, directory permissions, metrics path, and configured upload prerequisites without creating backup artifacts.")
+	}
+	if shouldBlockScheduledRootRun(currentUser, execSource) {
+		preview.Warnings = append(preview.Warnings, "Current runtime looks like a root scheduled runner. Scheduled execution should use the developer user-level systemd service/timer instead.")
 	}
 
 	preview.Lines = append(preview.Lines, "Config file will not be rewritten unless you explicitly save from the TUI.")
@@ -520,11 +770,18 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	}
 	startedAt := time.Now()
 	runID := startedAt.Format(runTimestampLayout)
+	resourceProfile := buildAdaptiveResourceProfile(cfg, 0)
+	logAdaptiveResourceProfile(resourceProfile)
 	record := runRecord{
-		Timestamp: time.Now().UTC(),
-		RunID:     runID,
-		Status:    "failed",
-		BackupDir: cfg.BackupDir,
+		Timestamp:                time.Now().UTC(),
+		RunID:                    runID,
+		Status:                   "failed",
+		BackupDir:                cfg.BackupDir,
+		AdaptiveLoadPerCPU:       resourceProfile.LoadPerCPU,
+		AdaptiveLogicalParallel:  resourceProfile.LogicalParallel,
+		AdaptivePhysicalParallel: resourceProfile.XtrabackupParallel,
+		AdaptiveXbcloudParallel:  resourceProfile.XbcloudParallel,
+		AdaptiveTuningReason:     resourceProfile.TuningReason,
 	}
 	logicalUploadRequired := false
 	logicalUploadSucceeded := false
@@ -532,6 +789,8 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	physicalUploadSucceeded := false
 	logicalDue := false
 	physicalDue := false
+	logicalScheduleReason := ""
+	physicalScheduleReason := ""
 	var logCloser io.Closer
 	stopRealtimeMetrics := func() {}
 	record.OSUser = currentOSUser()
@@ -620,16 +879,16 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	physicalLastSuccess := parseScheduleTimestamp(state.PhysicalLastSuccess)
 
 	if cfg.LogicalEnabled {
-		logicalDue, _, err = evaluateSchedule(time.Now(), cfg.LogicalSchedule, logicalLastSuccess)
+		logicalDue, logicalScheduleReason, err = evaluateSchedule(time.Now(), cfg.LogicalSchedule, logicalLastSuccess)
 		if err != nil {
 			record.FailureReason = fmt.Sprintf("logical backup schedule error: %v", err)
 			record.ExitCode = finalizeRun(cfg, &record, startedAt)
 			return record, nil
 		}
 		if logicalDue {
-			log.Printf("logical backup: due now schedule=%s", cfg.LogicalSchedule)
+			log.Printf("logical backup: due now %s", logicalScheduleReason)
 		} else {
-			log.Printf("logical backup: skipped by schedule=%s", cfg.LogicalSchedule)
+			log.Printf("logical backup: skipped %s", logicalScheduleReason)
 		}
 	} else {
 		log.Printf("logical backup: disabled by BACKUP_LOGICAL_ENABLED=false")
@@ -639,16 +898,16 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		if !cfg.PhysicalS3UploadEnabled {
 			log.Printf("physical backup: skipped because BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false and physical mode only supports direct S3 upload")
 		} else {
-			physicalDue, _, err = evaluateSchedule(time.Now(), cfg.PhysicalSchedule, physicalLastSuccess)
+			physicalDue, physicalScheduleReason, err = evaluateSchedule(time.Now(), cfg.PhysicalSchedule, physicalLastSuccess)
 			if err != nil {
 				record.FailureReason = fmt.Sprintf("physical backup schedule error: %v", err)
 				record.ExitCode = finalizeRun(cfg, &record, startedAt)
 				return record, nil
 			}
 			if physicalDue {
-				log.Printf("physical backup: due now schedule=%s", cfg.PhysicalSchedule)
+				log.Printf("physical backup: due now %s", physicalScheduleReason)
 			} else {
-				log.Printf("physical backup: skipped by schedule=%s", cfg.PhysicalSchedule)
+				log.Printf("physical backup: skipped %s", physicalScheduleReason)
 			}
 		}
 	} else {
@@ -657,7 +916,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 
 	if !logicalDue && !physicalDue {
 		if !cfg.PreflightOnly {
-			record.Status = "success"
+			record.Status = "skipped"
 			log.Printf("no backup tasks are due for this run")
 			record.ExitCode = finalizeRun(cfg, &record, startedAt)
 			return record, nil
@@ -698,8 +957,10 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	if logicalDue {
 		restoreMaxExecTime := tryDisableMaxExecutionTime(cfg)
 		defer restoreMaxExecTime()
+		logicalCfg := cfg
+		logicalCfg.LogicalParallel = resourceProfile.LogicalParallel
 
-		discoveredDatabases, err := listDatabases(cfg)
+		discoveredDatabases, err := listDatabases(logicalCfg)
 		if err != nil {
 			record.FailureReason = err.Error()
 			record.ExitCode = finalizeRun(cfg, &record, startedAt)
@@ -720,40 +981,18 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 			stateDirty = true
 		} else {
 			log.Printf("found %d databases: %s", len(databases), strings.Join(databases, ", "))
-			for index, dbName := range databases {
-				ext := ".sql.gz"
-				if cfg.EncryptionKey != "" {
-					ext = ".sql.gz.enc"
-				}
-				outputPath := filepath.Join(runFolder, dbName+ext)
-				log.Printf("[%d/%d] processing %s", index+1, len(databases), dbName)
-				requestedTables := selectedTablesForDatabase(cfg, dbName)
-				tables := requestedTables
-				if len(requestedTables) > 0 {
-					availableTables, missingTables, err := resolveSelectedTablesForDatabase(cfg, dbName)
-					if err != nil {
-						log.Printf("warning: could not validate selected tables for database=%s: %v", dbName, err)
-						log.Printf("database=%s: skipping table-scoped dump so the backup can continue without errors", dbName)
-						tables = nil
-					} else {
-						tables = availableTables
-						if len(missingTables) > 0 {
-							log.Printf("database=%s: skipping missing tables from logical backup: %s", dbName, strings.Join(missingTables, ", "))
-						}
-						if len(tables) == 0 {
-							log.Printf("database=%s: no requested tables remain after validation; skipping this database", dbName)
-							result := databaseResult{
-								Name:     dbName,
-								Status:   "success",
-								Duration: "0s",
-							}
-							record.Results = append(record.Results, result)
-							record.DatabasesSucceeded++
-							continue
-						}
-					}
-				}
-				result := dumpWithRetry(cfg, dbName, outputPath, tables)
+			log.Printf(
+				"logical backup tuning: parallel=%d gzip_level=%d",
+				normalizedLogicalParallelism(logicalCfg.LogicalParallel),
+				normalizedLogicalGzipLevel(logicalCfg.LogicalGzipLevel),
+			)
+			tasks, err := prepareLogicalBackupTasks(logicalCfg, runFolder, databases)
+			if err != nil {
+				record.FailureReason = err.Error()
+				record.ExitCode = finalizeRun(cfg, &record, startedAt)
+				return record, nil
+			}
+			for _, result := range executeLogicalBackupTasks(logicalCfg, tasks) {
 				record.Results = append(record.Results, result)
 				if result.Status == "success" {
 					record.DatabasesSucceeded++
@@ -773,6 +1012,12 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		log.Printf("physical backup: enabled, starting direct S3 stream")
 		physResult := runPhysicalBackup(cfg, runFolder)
 		record.PhysicalBackup = &physResult
+		if physResult.XtrabackupParallel > 0 {
+			record.AdaptivePhysicalParallel = physResult.XtrabackupParallel
+		}
+		if physResult.XbcloudParallel > 0 {
+			record.AdaptiveXbcloudParallel = physResult.XbcloudParallel
+		}
 		if physResult.Status != "success" {
 			log.Printf("physical backup failed: %s", physResult.Error)
 			if record.FailureReason == "" {
@@ -812,21 +1057,26 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		record.FailureReason = fmt.Sprintf("%d of %d database backups failed", record.DatabasesFailed, record.DatabasesTotal)
 	}
 
-	record.ExitCode = finalizeRun(cfg, &record, startedAt)
 	if record.RunFolder != "" && logicalDue {
+		if err := writeManifest(record.RunFolder, record); err != nil {
+			log.Printf("warning: failed to write pre-upload manifest for run=%s: %v", record.RunID, err)
+		}
 		if cfg.LogicalS3UploadEnabled {
-			record.LogicalUploadRun = true
 			logicalUploadRequired = true
 			if err := uploadBackupToS3(cfg, record.RunFolder); err != nil {
 				log.Printf("s3 upload error: %v", err)
+				markLogicalUploadFailure(&record, err)
 			} else {
 				logicalUploadSucceeded = true
+				markLogicalUploadSuccess(&record)
 			}
 		} else {
-			record.LogicalUploadNote = "logical backup S3 upload skipped by BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false or logical backup not scheduled"
-			log.Printf("%s", record.LogicalUploadNote)
+			note := "logical backup S3 upload skipped by BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false or logical backup not scheduled"
+			markLogicalUploadSkipped(&record, note)
+			log.Printf("%s", note)
 		}
 	}
+	record.ExitCode = finalizeRun(cfg, &record, startedAt)
 	return record, nil
 }
 
