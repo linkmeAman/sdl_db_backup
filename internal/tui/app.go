@@ -30,6 +30,7 @@ const (
 	screenHealth
 	screenObservability
 	screenSystemd
+	screenInspect
 )
 
 type focusRegion int
@@ -151,6 +152,15 @@ type model struct {
 	healthView        viewport.Model
 	observabilityView viewport.Model
 	systemdView       viewport.Model
+
+	// inspect screen state
+	inspectRun        *backupapp.InspectRun
+	inspectErr        string
+	inspectRunID      string
+	inspectDBIndex    int
+	inspectSearch     string
+	inspectSearchMode bool
+	inspectSearchInput textinput.Model
 
 	logView       viewport.Model
 	logLines      []string
@@ -367,6 +377,9 @@ func newModel(envPath string, cfg backupapp.Config) model {
 	healthView := viewport.New(80, 12)
 	observabilityView := viewport.New(80, 12)
 	systemdView := viewport.New(80, 12)
+	inspectSearch := textinput.New()
+	inspectSearch.Placeholder = "search databases"
+	inspectSearch.Prompt = "/ "
 
 	m := model{
 		envPath:             envPath,
@@ -379,6 +392,7 @@ func newModel(envPath string, cfg backupapp.Config) model {
 		healthView:          healthView,
 		observabilityView:   observabilityView,
 		systemdView:         systemdView,
+		inspectSearchInput:  inspectSearch,
 		configView:          configView,
 		searchInput:         search,
 		editorInput:         editor,
@@ -476,8 +490,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushToast("error", "history load failed: "+msg.err.Error())
 		} else {
 			m.history = msg.runs
-			if m.historySelected >= len(m.history) {
-				m.historySelected = max(0, len(m.history)-1)
+			if len(m.history) > 0 {
+				m.historySelected = len(m.history) - 1
+			} else {
+				m.historySelected = 0
 			}
 		}
 	case validationMsg:
@@ -596,6 +612,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.runErr = ""
 			m.pushToast("ok", "backup finished: "+msg.result.Status)
 			cmds = append(cmds, loadHealth(m.envPath), loadHistory(m.cfg.RunLogPath))
+		}
+	case inspectDataMsg:
+		if msg.err != nil {
+			m.inspectErr = msg.err.Error()
+			m.inspectRun = nil
+			m.pushToast("error", "inspect failed")
+		} else {
+			m.inspectErr = ""
+			m.inspectRun = msg.data
+			m.inspectDBIndex = 0
+			m.inspectSearch = ""
+			m.inspectSearchMode = false
+			m.inspectSearchInput.SetValue("")
+			m.pushToast("ok", "inspect loaded — "+fmt.Sprintf("%d databases", len(msg.data.LogicalDBs)))
+		}
+	case clipboardMsg:
+		if msg.err != nil {
+			m.pushToast("warn", msg.err.Error())
+		} else {
+			m.pushToast("ok", "copied: "+msg.text)
 		}
 	case saveConfigMsg:
 		if msg.err != nil {
