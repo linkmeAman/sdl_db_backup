@@ -149,6 +149,8 @@ func (m model) viewContent(height int, toastView string) string {
 		body = m.viewObservability(innerWidth)
 	case screenSystemd:
 		body = m.viewSystemd(innerWidth)
+	case screenInspect:
+		body = m.viewInspect(innerWidth)
 	}
 
 	targetInnerHeight := clampNonNegative(height - 2)
@@ -712,24 +714,32 @@ func (m model) viewLogs(width int) string {
 }
 
 func (m model) viewHistory(width int) string {
-	lines := []string{title.Render("Run History"), muted.Render("j/k up/down   v validate logical   t test sandbox restore   r refresh"), ""}
+	lines := []string{title.Render("Run History"), muted.Render("j/k up/down   c copy run-id   i inspect   v validate logical   t test sandbox restore   r refresh"), ""}
 	if m.historyErr != "" {
 		lines = append(lines, bad.Render(m.historyErr))
 		return strings.Join(lines, "\n")
 	}
-	lines = append(lines, fmt.Sprintf("%-19s %-9s %-10s %-10s %s", "time", "status", "dbs", "duration", "run id"))
+	lines = append(lines, fmt.Sprintf("  %-19s %-9s %-10s %-10s %s", "time", "status", "dbs", "duration", "run id"))
 	limit := min(len(m.history), max(5, m.mainPanelHeight()-10))
 	start := max(0, len(m.history)-limit)
 	row := 0
 	for i := len(m.history) - 1; i >= start; i-- {
 		run := m.history[i]
-		line := fmt.Sprintf("%-19s %-9s %-10s %-10s %s",
+		
+		cursor := "  "
+		if i == m.historySelected {
+			cursor = "▶ "
+		}
+
+		line := fmt.Sprintf("%s%-19s %-9s %-10s %-10s %s",
+			cursor,
 			run.Timestamp.Format("2006-01-02 15:04"),
 			run.Status,
 			fmt.Sprintf("%d/%d", run.DatabasesSucceeded, run.DatabasesTotal),
 			run.Duration,
 			run.RunID,
 		)
+		
 		if i == m.historySelected {
 			line = selected.Width(clampNonNegative(width - 4)).Render(line)
 		} else if row%2 == 1 {
@@ -1105,8 +1115,14 @@ func (m model) viewStatusBar() string {
 	if m.focus == focusSidebar {
 		focusLabel = "◨ Sidebar"
 	}
+	screenName := "Unknown"
+	if int(m.activeScreen) < len(screens) {
+		screenName = screens[m.activeScreen].name
+	} else if m.activeScreen == screenInspect {
+		screenName = "󰈙 Inspect"
+	}
 	left := lipgloss.JoinHorizontal(lipgloss.Center,
-		statusPill.Render(screens[m.activeScreen].name),
+		statusPill.Render(screenName),
 		statusDimPill.Render(focusLabel),
 		statusDimPill.Render("📁 "+m.envPath),
 	)
@@ -1340,4 +1356,85 @@ func (m *model) updateLogViewport() {
 	if m.logFollow {
 		m.logView.GotoBottom()
 	}
+}
+
+func (m model) viewInspect(width int) string {
+	hintStr := "j/k navigate   / search   c copy run-id   C copy db-path   q back"
+	if m.inspectSearchMode {
+		hintStr = m.inspectSearchInput.View() + "  (enter/esc to confirm)"
+	} else if m.inspectSearch != "" {
+		hintStr = "filter: " + m.inspectSearch + "   (/ to change)   " + muted.Render("j/k navigate   c copy run-id   C copy db-path   q back")
+	}
+	lines := []string{title.Render("Inspect Backup"), muted.Render(hintStr), ""}
+
+	if m.inspectErr != "" && m.inspectRun == nil {
+		lines = append(lines, bad.Render(m.inspectErr))
+		return strings.Join(lines, "\n")
+	}
+	if m.inspectRun == nil {
+		lines = append(lines, muted.Render("Loading..."))
+		return strings.Join(lines, "\n")
+	}
+
+	run := m.inspectRun
+	lines = append(lines,
+		fmt.Sprintf("Run ID:   %s", title.Render(run.RunID)),
+		fmt.Sprintf("Location: %s", muted.Render(run.RunFolder)),
+		"",
+	)
+
+	// Database list section
+	filtered := m.filteredInspectDBs()
+
+	if len(run.LogicalDBs) == 0 && !run.HasPhysical {
+		lines = append(lines, muted.Render("No databases found in this backup run."))
+		return strings.Join(lines, "\n")
+	}
+
+	if len(run.LogicalDBs) > 0 {
+		searchSuffix := ""
+		if m.inspectSearch != "" {
+			searchSuffix = fmt.Sprintf(" (filtered: %d/%d)", len(filtered), len(run.LogicalDBs))
+		}
+		lines = append(lines, sectionTitle.Render("Logical Databases"+searchSuffix))
+
+		if len(filtered) == 0 {
+			lines = append(lines, muted.Render("  No databases match the search."))
+		}
+		for i, db := range filtered {
+			dbLine := fmt.Sprintf("  %-32s %s", db.Name, muted.Render(db.SizeStr))
+			if i == m.inspectDBIndex {
+				dbLine = selected.Width(clampNonNegative(width - 4)).Render(fmt.Sprintf("  %-32s %s", db.Name, db.SizeStr))
+			}
+			lines = append(lines, dbLine)
+		}
+		lines = append(lines, "")
+	}
+
+	// Detail panel for selected DB
+	if len(filtered) > 0 && m.inspectDBIndex < len(filtered) {
+		selDB := filtered[m.inspectDBIndex]
+		lines = append(lines, sectionTitle.Render("Selected: "+selDB.Name))
+		lines = append(lines, fmt.Sprintf("  File:  %s", selDB.FilePath))
+		lines = append(lines, fmt.Sprintf("  Size:  %s", selDB.SizeStr))
+		lines = append(lines, "")
+		lines = append(lines, sectionTitle.Render("Restore Command"))
+		for _, cmd := range run.RestoreCommandsForDB(selDB, "") {
+			lines = append(lines, "  "+good.Render("$")+" "+cmd)
+		}
+		lines = append(lines, muted.Render("  (press C to copy the file path to clipboard)"))
+	}
+
+	// Physical backup section
+	if run.HasPhysical {
+		lines = append(lines, "", sectionTitle.Render("Physical Backup"))
+		lines = append(lines, fmt.Sprintf("  Folder: %s", run.PhysicalFolder))
+		lines = append(lines, fmt.Sprintf("  Size:   %s", run.PhysicalSize))
+		lines = append(lines, "", sectionTitle.Render("Restore Steps (xtrabackup)"))
+		for i, cmd := range run.PhysicalRestoreCommands() {
+			lines = append(lines, fmt.Sprintf("  %d. %s %s", i+1, good.Render("$"), cmd))
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -94,6 +95,10 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "q":
+		if m.activeScreen == screenInspect {
+			m.setScreen(screenHistory)
+			return m, nil
+		}
 		if m.dirty {
 			m.confirm("Discard unsaved config changes and quit?", func() tea.Cmd { return tea.Quit })
 			return m, nil
@@ -123,6 +128,10 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 		m.notifyAction("focus moved to " + focusName(m.focus))
 		return m, nil
 	case "esc":
+		if m.activeScreen == screenInspect {
+			m.setScreen(screenHistory)
+			return m, nil
+		}
 		if m.activeScreen == screenBackup && m.focus == focusContent && m.backupStep == stepScope && m.scopeLevel == "tables" {
 			return m.handleBackupKey(key)
 		}
@@ -201,6 +210,8 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 		return m.handleSystemdKey(key)
 	case screenHistory:
 		return m.handleHistoryKey(key)
+	case screenInspect:
+		return m.handleInspectKey(key)
 	}
 	return m, nil
 }
@@ -735,13 +746,13 @@ func (m model) handleLogsKey(key tea.KeyMsg) (model, tea.Cmd) {
 func (m model) handleHistoryKey(key tea.KeyMsg) (model, tea.Cmd) {
 	switch key.String() {
 	case "j", "down":
+		if m.historySelected > 0 {
+			m.historySelected--
+		}
+	case "k", "up":
 		m.historySelected++
 		if m.historySelected >= len(m.history) {
 			m.historySelected = len(m.history) - 1
-		}
-	case "k", "up":
-		if m.historySelected > 0 {
-			m.historySelected--
 		}
 	case "r":
 		m.notifyAction("refreshing history")
@@ -761,6 +772,25 @@ func (m model) handleHistoryKey(key tea.KeyMsg) (model, tea.Cmd) {
 			run := m.history[m.historySelected]
 			m.notifyAction("validating logical backup for run " + run.RunID)
 			return m, validateLogicalRunCmd(m.cfg, run.RunID)
+		}
+	case "c":
+		if len(m.history) > 0 {
+			run := m.history[m.historySelected]
+			return m, copyToClipboard(run.RunID)
+		}
+	case "i":
+		if len(m.history) > 0 {
+			run := m.history[m.historySelected]
+			m.notifyAction("inspecting backup run " + run.RunID)
+			m.inspectRunID = run.RunID
+			m.inspectRun = nil
+			m.inspectErr = "Loading..."
+			m.inspectDBIndex = 0
+			m.inspectSearch = ""
+			m.inspectSearchMode = false
+			m.inspectSearchInput.SetValue("")
+			m.setScreen(screenInspect)
+			return m, inspectRunCmd(m.envPath, run.RunID)
 		}
 	}
 	return m, nil
@@ -841,4 +871,75 @@ func (m *model) setScreen(screen screenID) {
 	if screen != previous && int(screen) >= 0 && int(screen) < len(screens) {
 		m.notifyAction("opened " + screens[screen].name)
 	}
+}
+
+func (m model) handleInspectKey(key tea.KeyMsg) (model, tea.Cmd) {
+	// If search mode is active, route to text input first
+	if m.inspectSearchMode {
+		switch key.String() {
+		case "esc", "enter":
+			m.inspectSearchMode = false
+			m.inspectSearchInput.Blur()
+			m.inspectSearch = m.inspectSearchInput.Value()
+			m.inspectDBIndex = 0
+		default:
+			var inputCmd tea.Cmd
+			m.inspectSearchInput, inputCmd = m.inspectSearchInput.Update(key)
+			m.inspectSearch = m.inspectSearchInput.Value()
+			m.inspectDBIndex = 0
+			return m, inputCmd
+		}
+		return m, nil
+	}
+
+	switch key.String() {
+	case "q", "esc":
+		m.setScreen(screenHistory)
+	case "/":
+		m.inspectSearchMode = true
+		m.inspectSearchInput.SetValue("")
+		m.inspectSearchInput.Focus()
+	case "c":
+		if m.inspectRun != nil {
+			return m, copyToClipboard(m.inspectRun.RunID)
+		}
+	case "C":
+		// Copy full file path of the selected database
+		if m.inspectRun != nil {
+			filtered := m.filteredInspectDBs()
+			if len(filtered) > 0 && m.inspectDBIndex < len(filtered) {
+				return m, copyToClipboard(filtered[m.inspectDBIndex].FilePath)
+			}
+		}
+	case "j", "down":
+		if m.inspectRun != nil {
+			filtered := m.filteredInspectDBs()
+			if m.inspectDBIndex < len(filtered)-1 {
+				m.inspectDBIndex++
+			}
+		}
+	case "k", "up":
+		if m.inspectDBIndex > 0 {
+			m.inspectDBIndex--
+		}
+	}
+	return m, nil
+}
+
+// filteredInspectDBs returns the DB list filtered by the current search term.
+func (m model) filteredInspectDBs() []backupapp.InspectDB {
+	if m.inspectRun == nil {
+		return nil
+	}
+	if m.inspectSearch == "" {
+		return m.inspectRun.LogicalDBs
+	}
+	needle := strings.ToLower(m.inspectSearch)
+	var out []backupapp.InspectDB
+	for _, db := range m.inspectRun.LogicalDBs {
+		if strings.Contains(strings.ToLower(db.Name), needle) {
+			out = append(out, db)
+		}
+	}
+	return out
 }
