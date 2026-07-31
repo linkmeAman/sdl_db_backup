@@ -11,13 +11,20 @@ NC='\033[0m' # No Color
 echo -e "${CYAN}=== SDL DB Backup One-Command Installer ===${NC}"
 
 if [ "$EUID" -eq 0 ]; then
-  echo -e "${YELLOW}Warning: Running as root is not recommended for this user-scoped installation.${NC}"
+  echo -e "${CYAN}Mode: System-Wide (Root Installation)${NC}"
+  BIN_DIR="/usr/local/bin"
+  CONF_DIR="/etc/sdl-db-backup"
+  SYSTEMD_DIR="/etc/systemd/system"
+  IS_ROOT=true
+else
+  echo -e "${CYAN}Mode: User-Scoped Installation ($USER)${NC}"
+  BIN_DIR="$HOME/.local/bin"
+  CONF_DIR="$HOME/.config/sdl-db-backup"
+  SYSTEMD_DIR="$HOME/.config/systemd/user"
+  IS_ROOT=false
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="$HOME/.local/bin"
-CONF_DIR="$HOME/.config/sdl-db-backup"
-SYSTEMD_DIR="$HOME/.config/systemd/user"
 
 mkdir -p "$BIN_DIR"
 mkdir -p "$CONF_DIR"
@@ -66,7 +73,36 @@ else
 fi
 
 echo -e "${GREEN}[4/5] Configuring Systemd Background Service...${NC}"
-# Generate service unit
+if [ "$IS_ROOT" = true ]; then
+cat > "$SYSTEMD_DIR/sdl-db-backup.service" << EOF
+[Unit]
+Description=SDL DB Backup Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$BIN_DIR/sdl-db-backup
+Environment="BACKUP_ENV_FILE=$ENV_FILE"
+Environment="BACKUP_EXECUTION_SOURCE=runner"
+WorkingDirectory=/root
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "$SYSTEMD_DIR/sdl-db-backup.timer" << EOF
+[Unit]
+Description=SDL DB Backup Timer
+
+[Timer]
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+else
 cat > "$SYSTEMD_DIR/sdl-db-backup.service" << EOF
 [Unit]
 Description=SDL DB Backup Service
@@ -84,7 +120,6 @@ TimeoutStartSec=0
 WantedBy=default.target
 EOF
 
-# Generate timer unit
 cat > "$SYSTEMD_DIR/sdl-db-backup.timer" << EOF
 [Unit]
 Description=SDL DB Backup Timer
@@ -96,14 +131,24 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+fi
 
 echo -e "${GREEN}[5/5] Enabling Systemd Timer...${NC}"
-if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-    systemctl --user daemon-reload
-    systemctl --user enable --now sdl-db-backup.timer
+if [ "$IS_ROOT" = true ]; then
+    systemctl daemon-reload
+    systemctl enable --now sdl-db-backup.timer
 else
-    echo -e "${YELLOW}Notice: systemctl --user session not active right now. Skipping systemd enable.${NC}"
-    echo -e "${YELLOW}To enable background timer later, run: systemctl --user enable --now sdl-db-backup.timer${NC}"
+    # Enable linger so user timers run even when SSH session is closed
+    if command -v loginctl >/dev/null 2>&1; then
+        loginctl enable-linger "$USER" 2>/dev/null || true
+    fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+        systemctl --user daemon-reload
+        systemctl --user enable --now sdl-db-backup.timer
+    else
+        echo -e "${YELLOW}Notice: systemctl --user session not active right now.${NC}"
+        echo -e "${YELLOW}To enable background timer later, run: systemctl --user enable --now sdl-db-backup.timer${NC}"
+    fi
 fi
 
 echo -e "${CYAN}========================================================================${NC}"
@@ -118,6 +163,12 @@ echo -e "  - BACKUP_XTRABACKUP_PASS (if physical backups are enabled)"
 echo ""
 echo -e "We have automatically generated a secure BACKUP_ENCRYPTION_KEY for you."
 echo ""
-echo -e "You can edit these settings seamlessly by running:"
+echo -e "${YELLOW}🔑 MYSQL BACKUP USER RECOMMENDED SQL: ${NC}"
+echo -e "If using a dedicated MySQL backup user instead of root:"
+echo -e "  ${CYAN}CREATE USER IF NOT EXISTS 'sdl_backup'@'localhost' IDENTIFIED BY 'your_password';${NC}"
+echo -e "  ${CYAN}GRANT SELECT, LOCK TABLES, SHOW VIEW, EVENT, TRIGGER, PROCESS, RELOAD ON *.* TO 'sdl_backup'@'localhost';${NC}"
+echo -e "  ${CYAN}FLUSH PRIVILEGES;${NC}"
+echo ""
+echo -e "You can edit settings seamlessly by running:"
 echo -e "  ${CYAN}sdl-db-backup-tui${NC} (Then press '4' for the Config Editor)"
 echo -e "${CYAN}========================================================================${NC}"
