@@ -55,11 +55,20 @@ For Prometheus/Grafana monitoring details, full metric definitions, ready-to-pas
 
 The easiest way to install and configure SDL DB Backup is by using the automated one-command installer. 
 
-This installer will automatically verify dependencies, compile the Go binaries, install them to your local `~/.local/bin` path, set up your configuration folder at `~/.config/sdl-db-backup`, generate a secure encryption key, and configure the background systemd service.
+This installer will automatically verify system dependencies, bootstrap the Go toolchain if missing, compile the Go binaries, install them to your local `~/.local/bin` path, set up your configuration folder at `~/.config/sdl-db-backup`, generate a secure AES encryption key, and configure the background systemd service and timer.
+
+### Prerequisites
+
+Ensure your host server has a MySQL client installed for database dumps:
+- **Debian / Ubuntu**: `sudo apt update && sudo apt install -y mysql-client`
+- **RHEL / CentOS / Fedora**: `sudo dnf install -y mariadb`
+
+### Quick Installation
 
 ```bash
-git clone https://github.com/your-repo/sdl-db-backup.git
-cd sdl-db-backup
+git clone https://github.com/linkmeAman/sdl_db_backup.git
+cd sdl_db_backup
+chmod +x install.sh
 ./install.sh
 ```
 
@@ -67,7 +76,7 @@ cd sdl-db-backup
 ```bash
 sdl-db-backup-tui
 ```
-Then press `4` to enter the Config Editor and update `DB_USER`, `DB_PASS`, and S3 secrets.
+Then press `4` to enter the Config Editor and update `DB_USER`, `DB_PASS`, and S3 secrets (`BACKUP_S3_KEY_ID`, `BACKUP_S3_KEY_SECRET`, `BACKUP_S3_BUCKET_NAME`).
 
 ### Manual Setup
 
