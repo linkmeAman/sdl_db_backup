@@ -14,7 +14,7 @@ if [ "$EUID" -eq 0 ]; then
   echo -e "${YELLOW}Warning: Running as root is not recommended for this user-scoped installation.${NC}"
 fi
 
-# 1. Paths
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
 CONF_DIR="$HOME/.config/sdl-db-backup"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
@@ -23,29 +23,33 @@ mkdir -p "$BIN_DIR"
 mkdir -p "$CONF_DIR"
 mkdir -p "$SYSTEMD_DIR"
 
-# Ensure ~/.local/bin is in PATH for current session
-if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    export PATH="$BIN_DIR:$PATH"
-fi
+# Ensure local bin and bootstrapped Go binaries are in PATH
+export PATH="$ROOT_DIR/.tools/go/bin:$ROOT_DIR/.tools/bin:$BIN_DIR:$PATH"
 
 echo -e "${GREEN}[1/5] Verifying System Dependencies...${NC}"
-if [ -f "./scripts/install-tools.sh" ]; then
-    bash ./scripts/install-tools.sh
+if [ -f "$ROOT_DIR/scripts/install-tools.sh" ]; then
+    bash "$ROOT_DIR/scripts/install-tools.sh"
+    export PATH="$ROOT_DIR/.tools/go/bin:$ROOT_DIR/.tools/bin:$BIN_DIR:$PATH"
 else
     echo -e "${YELLOW}Warning: ./scripts/install-tools.sh not found. Skipping dependency check.${NC}"
 fi
 
 echo -e "${GREEN}[2/5] Compiling and Installing Binaries...${NC}"
+if ! command -v go >/dev/null 2>&1; then
+    echo -e "${RED}Error: Go compiler is not installed or available on PATH.${NC}"
+    exit 1
+fi
+
 # Compile the Go binaries
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup" main.go
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-tui" ./cmd/sdl-db-backup-tui
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-health" ./cmd/sdl-db-backup-health
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-api" ./cmd/sdl-db-backup-api
+go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup" "$ROOT_DIR/main.go"
+go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-tui" "$ROOT_DIR/cmd/sdl-db-backup-tui"
+go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-health" "$ROOT_DIR/cmd/sdl-db-backup-health"
+go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-api" "$ROOT_DIR/cmd/sdl-db-backup-api"
 
 echo -e "${GREEN}[3/5] Setting up configuration...${NC}"
 ENV_FILE="$CONF_DIR/.env"
 if [ ! -f "$ENV_FILE" ]; then
-    cp .env.example "$ENV_FILE"
+    cp "$ROOT_DIR/.env.example" "$ENV_FILE"
     
     # Auto-generate a 32-byte (64 char hex) encryption key
     if command -v openssl >/dev/null 2>&1; then
@@ -94,8 +98,13 @@ WantedBy=timers.target
 EOF
 
 echo -e "${GREEN}[5/5] Enabling Systemd Timer...${NC}"
-systemctl --user daemon-reload
-systemctl --user enable --now sdl-db-backup.timer
+if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    systemctl --user enable --now sdl-db-backup.timer
+else
+    echo -e "${YELLOW}Notice: systemctl --user session not active right now. Skipping systemd enable.${NC}"
+    echo -e "${YELLOW}To enable background timer later, run: systemctl --user enable --now sdl-db-backup.timer${NC}"
+fi
 
 echo -e "${CYAN}========================================================================${NC}"
 echo -e "${GREEN}✓ Installation Complete!${NC}"

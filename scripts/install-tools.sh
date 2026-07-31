@@ -47,7 +47,7 @@ ensure_local_go() {
 		return 0
 	fi
 
-	GO_VERSION="${GO_VERSION:-1.23.10}"
+	GO_VERSION="${GO_VERSION:-1.24.2}"
 	GO_TARBALL_URL="${GO_TARBALL_URL:-https://go.dev/dl/go${GO_VERSION}.linux-$(go_arch).tar.gz}"
 	tmp_tarball="$(mktemp /tmp/go.XXXXXX.tar.gz)"
 
@@ -64,27 +64,28 @@ ensure_local_go() {
 }
 
 check_required_tools() {
-	missing=()
-	for tool in mysql mysqldump php xtrabackup xbcloud; do
-		if ! command -v "$tool" >/dev/null 2>&1; then
-			missing+=("$tool")
-		fi
-	done
-
-	if [[ ${#missing[@]} -gt 0 ]]; then
-		warn "This script does not install system packages. Missing tools: ${missing[*]}"
-		warn "Ask the server administrator to install them, or provide them via the target host's standard package manager."
-		return 1
+	local has_mysql=true
+	if ! command -v mysqldump >/dev/null 2>&1 && ! command -v mysql >/dev/null 2>&1; then
+		has_mysql=false
+		warn "MySQL client (mysqldump/mysql) not found."
+		warn "To dump MySQL databases, install mysql-client or mariadb-client via your package manager:"
+		warn "  Debian/Ubuntu: sudo apt update && sudo apt install -y mysql-client"
+		warn "  RHEL/CentOS:   sudo dnf install -y mariadb"
 	fi
+
+	if ! command -v xtrabackup >/dev/null 2>&1 || ! command -v xbcloud >/dev/null 2>&1; then
+		log "Notice: Percona XtraBackup/xbcloud not found. Physical backup features will be disabled."
+	fi
+
+	if ! command -v php >/dev/null 2>&1; then
+		log "Notice: PHP CLI not found. (Only needed if BACKUP_LOGICAL_UPLOAD_MODE=php)"
+	fi
+
+	return 0
 }
 
 ensure_local_go
-
-if ! check_required_tools; then
-	log "Local bootstrap completed, but host prerequisites are still missing."
-	log "Next step: copy .env.example to .env and configure the target server."
-	exit 1
-fi
+check_required_tools
 
 log "Local bootstrap completed successfully."
-log "Next step: copy .env.example to .env and configure the target server."
+log "Next step: run ./install.sh or configure .env file."
