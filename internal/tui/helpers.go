@@ -290,11 +290,16 @@ func (p *runProgressState) applyLogLine(line string) {
 		p.currentStage = "discovered databases"
 		return
 	}
-	if _, total, _, ok := parseProcessingDatabase(line); ok {
-		// Only update total from processing lines, ignore currentDB/current because
-		// they are emitted all at once in batch at the start.
+	if current, total, db, ok := parseProcessingDatabase(line); ok {
 		if total > 0 {
 			p.total = total
+		}
+		if current > 0 {
+			p.current = current
+		}
+		if db != "" {
+			p.currentDB = db
+			p.currentStage = "processing " + db
 		}
 		return
 	}
