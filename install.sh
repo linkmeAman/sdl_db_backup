@@ -47,11 +47,25 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
-# Compile the Go binaries
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup" "$ROOT_DIR/main.go"
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-tui" "$ROOT_DIR/cmd/sdl-db-backup-tui"
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-health" "$ROOT_DIR/cmd/sdl-db-backup-health"
-go build -buildvcs=false -o "$BIN_DIR/sdl-db-backup-api" "$ROOT_DIR/cmd/sdl-db-backup-api"
+install_binary() {
+    local src="$1"
+    local name="$2"
+    local tmp_bin="$(mktemp /tmp/${name}.XXXXXX)"
+    go build -buildvcs=false -o "$tmp_bin" "$src"
+    mv -f "$tmp_bin" "$BIN_DIR/$name"
+    chmod 755 "$BIN_DIR/$name"
+    # For root mode, also sync to $HOME/.local/bin if present to prevent PATH mismatch
+    if [ "$IS_ROOT" = true ] && [ -d "$HOME/.local/bin" ]; then
+        mkdir -p "$HOME/.local/bin"
+        cp -f "$BIN_DIR/$name" "$HOME/.local/bin/$name"
+        chmod 755 "$HOME/.local/bin/$name"
+    fi
+}
+
+install_binary "$ROOT_DIR/main.go" "sdl-db-backup"
+install_binary "$ROOT_DIR/cmd/sdl-db-backup-tui" "sdl-db-backup-tui"
+install_binary "$ROOT_DIR/cmd/sdl-db-backup-health" "sdl-db-backup-health"
+install_binary "$ROOT_DIR/cmd/sdl-db-backup-api" "sdl-db-backup-api"
 
 echo -e "${GREEN}[3/5] Setting up configuration...${NC}"
 ENV_FILE="$CONF_DIR/.env"
@@ -70,6 +84,12 @@ if [ ! -f "$ENV_FILE" ]; then
     echo -e "${GREEN}Created new configuration at $ENV_FILE${NC}"
 else
     echo -e "${YELLOW}Configuration already exists at $ENV_FILE. Skipping .env creation.${NC}"
+fi
+
+# Ensure BACKUP_ALLOW_ROOT_RUNNER=true is set in configuration
+if ! grep -q "^BACKUP_ALLOW_ROOT_RUNNER=" "$ENV_FILE" 2>/dev/null; then
+    echo "BACKUP_ALLOW_ROOT_RUNNER=true" >> "$ENV_FILE"
+    echo -e "${GREEN}Added BACKUP_ALLOW_ROOT_RUNNER=true to $ENV_FILE${NC}"
 fi
 
 echo -e "${GREEN}[4/5] Configuring Systemd Background Service...${NC}"
