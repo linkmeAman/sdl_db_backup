@@ -103,7 +103,10 @@ const (
 	ManualRunPhysicalOnly ManualRunMode = "physical_only"
 )
 
-func shouldBlockScheduledRootRun(osUser, executionSource string) bool {
+func shouldBlockScheduledRootRun(osUser, executionSource string, allowRoot bool) bool {
+	if allowRoot {
+		return false
+	}
 	return normalizedExecutionSource(executionSource) == "runner" && strings.TrimSpace(osUser) == "root"
 }
 
@@ -511,8 +514,8 @@ func BuildManualRunConfig(base Config, opts ManualRunOptions) (Config, Preview, 
 		preview.Lines = append(preview.Lines, "Run type: preflight only")
 		preview.Warnings = append(preview.Warnings, "Preflight-only mode validates MySQL, directory permissions, metrics path, and configured upload prerequisites without creating backup artifacts.")
 	}
-	if shouldBlockScheduledRootRun(currentUser, execSource) {
-		preview.Warnings = append(preview.Warnings, "Current runtime looks like a root scheduled runner. Scheduled execution should use the developer user-level systemd service/timer instead.")
+	if shouldBlockScheduledRootRun(currentUser, execSource, cfg.AllowRootRunner) {
+		preview.Warnings = append(preview.Warnings, "Current runtime looks like a root scheduled runner. Ensure BACKUP_ALLOW_ROOT_RUNNER=true is set in .env or run under user-level service.")
 	}
 
 	preview.Lines = append(preview.Lines, "Config file will not be rewritten unless you explicitly save from the TUI.")
@@ -858,8 +861,8 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		stopRealtimeMetrics = startRealtimeBackupMetricsEmitter(cfg, startedAt)
 	}
 
-	if shouldBlockScheduledRootRun(record.OSUser, record.ExecutionSource) {
-		record.FailureReason = "scheduled backup blocked for root user; use the user-level developer timer/service"
+	if shouldBlockScheduledRootRun(record.OSUser, record.ExecutionSource, cfg.AllowRootRunner) {
+		record.FailureReason = fmt.Sprintf("scheduled backup blocked for root user; set BACKUP_ALLOW_ROOT_RUNNER=true in .env or run under user-level service (current user: %s)", record.OSUser)
 		log.Printf("refusing scheduled backup as root user: %s", record.FailureReason)
 		record.ExitCode = finalizeRun(cfg, &record, startedAt)
 		return record, nil

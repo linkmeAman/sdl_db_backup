@@ -196,13 +196,16 @@ func TestIsIgnorablePipeReadError(t *testing.T) {
 }
 
 func TestShouldBlockScheduledRootRun(t *testing.T) {
-	if !shouldBlockScheduledRootRun("root", "runner") {
-		t.Fatalf("expected scheduled runner to be blocked for root")
+	if !shouldBlockScheduledRootRun("root", "runner", false) {
+		t.Fatalf("expected scheduled runner to be blocked for root when allowRoot is false")
 	}
-	if shouldBlockScheduledRootRun("root", "api") {
+	if shouldBlockScheduledRootRun("root", "runner", true) {
+		t.Fatalf("expected scheduled runner to be allowed for root when allowRoot is true")
+	}
+	if shouldBlockScheduledRootRun("root", "api", false) {
 		t.Fatalf("expected api-triggered run to remain allowed for root")
 	}
-	if shouldBlockScheduledRootRun("developer", "runner") {
+	if shouldBlockScheduledRootRun("developer", "runner", false) {
 		t.Fatalf("expected runner to remain allowed for non-root user")
 	}
 }
