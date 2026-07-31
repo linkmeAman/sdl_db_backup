@@ -94,6 +94,7 @@ type config struct {
 	RestoreTestPort         string
 	RestoreTestUser         string
 	RestoreTestPass         string
+	AllowRootRunner         bool
 }
 
 func getenv(key, fallback string) string {
@@ -366,6 +367,7 @@ func loadConfigFromValues(values map[string]string) config {
 		RestoreTestPort:         getMapValue(values, "RESTORE_TEST_PORT", "3306"),
 		RestoreTestUser:         getMapValue(values, "RESTORE_TEST_USER", "root"),
 		RestoreTestPass:         getMapValue(values, "RESTORE_TEST_PASS", ""),
+		AllowRootRunner:         getMapBool(values, "BACKUP_ALLOW_ROOT_RUNNER", true),
 	}
 }
 
@@ -660,6 +662,7 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_METRICS_SERVICE":            cfg.MetricsService,
 		"BACKUP_METRICS_ENV":                cfg.MetricsEnv,
 		"BACKUP_METRICS_REGION":             cfg.MetricsRegion,
+		"BACKUP_ALLOW_ROOT_RUNNER":          strconv.FormatBool(cfg.AllowRootRunner),
 		"RESTORE_TEST_ENABLED":              fmt.Sprintf("%t", cfg.RestoreTestEnabled),
 		"RESTORE_TEST_HOST":                 cfg.RestoreTestHost,
 		"RESTORE_TEST_PORT":                 cfg.RestoreTestPort,
