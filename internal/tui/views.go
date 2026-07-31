@@ -265,9 +265,22 @@ func (m model) viewDashboard(width int) string {
 			if r.ValidationStatus != "success" {
 				vs = bad
 			}
-			lines = append(lines, "  "+muted.Render("Validation: ")+vs.Render(r.ValidationStatus)+" via "+emptyDefault(r.ValidationMode, "validation"))
+			valTime := ""
+			if !r.ValidationCheckedAt.IsZero() {
+				valTime = " at " + r.ValidationCheckedAt.Format("2006-01-02 15:04")
+			}
+			lines = append(lines, "  "+muted.Render("Validation: ")+vs.Render(r.ValidationStatus)+" via "+emptyDefault(r.ValidationMode, "validation")+valTime)
 		} else {
 			lines = append(lines, "  "+muted.Render("Validation: not run — press 6 History to validate"))
+		}
+		if m.health.RestoreVerification.RestoreTestEnabled {
+			lines = append(lines,
+				"  "+muted.Render(fmt.Sprintf("Restore Verify: test=%t exact=%t sample=%d",
+					m.health.RestoreVerification.RestoreTestEnabled,
+					m.health.RestoreVerification.ExactRowCounts,
+					m.health.RestoreVerification.SampleDataRows,
+				)),
+			)
 		}
 		if r.FailureReason != "" {
 			lines = append(lines, "  "+bad.Render("Failure: ")+r.FailureReason)
