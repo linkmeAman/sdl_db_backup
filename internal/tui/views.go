@@ -445,7 +445,6 @@ func (m model) viewBackup(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-
 func (m model) viewBackupStep(index int, label string) string {
 	name := strings.TrimSpace(label[2:])
 	if int(m.backupStep) > index {
@@ -698,7 +697,7 @@ func (m model) viewConfigHint(visible []int) string {
 		"BACKUP_S3_UPLOAD_MODE":             "direct uploads logical backups from Go using env S3 secrets; php/http keep legacy upload paths.",
 		"BACKUP_S3_LOGICAL_PREFIX":          "S3 prefix for logical backup objects, before the run ID.",
 		"BACKUP_S3_PHYSICAL_PREFIX":         "S3 prefix for physical backup streams, before the run ID.",
-		"BACKUP_RETENTION_DAILY":             "How many daily local logical backup folders are retained.",
+		"BACKUP_RETENTION_DAILY":            "How many daily local logical backup folders are retained.",
 		"BACKUP_DIR":                        "Local folder where logical backup run folders are created.",
 		"BACKUP_LOG_DIR":                    "Folder for daily logs, per-run logs, run history, schedule state, and temporary overrides.",
 		"BACKUP_SYSTEMD_SERVICE_NAME":       "User-level systemd service unit name for the backup runner.",
@@ -738,7 +737,7 @@ func (m model) viewHistory(width int) string {
 	row := 0
 	for i := len(m.history) - 1; i >= start; i-- {
 		run := m.history[i]
-		
+
 		cursor := "  "
 		if i == m.historySelected {
 			cursor = "▶ "
@@ -752,7 +751,7 @@ func (m model) viewHistory(width int) string {
 			run.Duration,
 			run.RunID,
 		)
-		
+
 		if i == m.historySelected {
 			line = selected.Width(clampNonNegative(width - 4)).Render(line)
 		} else if row%2 == 1 {
