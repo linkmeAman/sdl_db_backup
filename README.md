@@ -138,7 +138,7 @@ Physical backup settings:
 - `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=true|false`
 - `BACKUP_XTRABACKUP_USER` and `BACKUP_XTRABACKUP_PASS` are the MySQL credentials used only by physical backup
 - `BACKUP_XTRABACKUP_RUN_AS_USER` is the Linux user used to execute `xtrabackup`, usually `mysql`
-- `BACKUP_XTRABACKUP_WORK_DIR=/tmp`
+- `BACKUP_XTRABACKUP_WORK_DIR=/mnt/volume_1/backup/xtrabackup-tmp`
 
 Shared S3 settings:
 - `BACKUP_S3_BUCKET=...`

@@ -351,7 +351,7 @@ func loadConfigFromValues(values map[string]string) config {
 		XtrabackupPass:          getMapValue(values, "BACKUP_XTRABACKUP_PASS", dbPass),
 		XtrabackupSocket:        getMapValue(values, "BACKUP_XTRABACKUP_SOCKET", ""),
 		XtrabackupRunAsUser:     getMapValue(values, "BACKUP_XTRABACKUP_RUN_AS_USER", ""),
-		XtrabackupWorkDir:       getMapValue(values, "BACKUP_XTRABACKUP_WORK_DIR", "/tmp"),
+		XtrabackupWorkDir:       getMapValue(values, "BACKUP_XTRABACKUP_WORK_DIR", "/mnt/volume_1/backup/xtrabackup-tmp"),
 		APIEnabled:              getMapBool(values, "BACKUP_API_ENABLED", false),
 		APIListenAddr:           getMapValue(values, "BACKUP_API_LISTEN_ADDR", "127.0.0.1:8086"),
 		APIBasePath:             getMapValue(values, "BACKUP_API_BASE_PATH", "/api/v1"),

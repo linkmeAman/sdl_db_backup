@@ -756,8 +756,10 @@ func pingMySQL(cfg config) error {
 	if cfg.DBEngine == "mysql" {
 		cmd = dbCmdContext(ctx, cfg, bin, "-N", "-e", "SELECT 1")
 	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("database connection failed: %w", err)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		message := chooseFailureMessage(err, string(out))
+		return fmt.Errorf("database connection failed (%s): %s", classifyFailure(err, message), message)
 	}
 	return nil
 }

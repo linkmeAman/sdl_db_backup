@@ -308,7 +308,7 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 	}
 	workDir := strings.TrimSpace(cfg.XtrabackupWorkDir)
 	if workDir == "" {
-		workDir = "/tmp"
+		workDir = "/mnt/volume_1/backup/xtrabackup-tmp"
 	}
 	xtrabackupCmd.Dir = workDir
 
