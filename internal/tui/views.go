@@ -698,7 +698,7 @@ func (m model) viewConfigHint(visible []int) string {
 		"BACKUP_S3_UPLOAD_MODE":             "direct uploads logical backups from Go using env S3 secrets; php/http keep legacy upload paths.",
 		"BACKUP_S3_LOGICAL_PREFIX":          "S3 prefix for logical backup objects, before the run ID.",
 		"BACKUP_S3_PHYSICAL_PREFIX":         "S3 prefix for physical backup streams, before the run ID.",
-		"BACKUP_RETENTION_DAYS":             "How many days of local logical backup folders are retained.",
+		"BACKUP_RETENTION_DAILY":             "How many daily local logical backup folders are retained.",
 		"BACKUP_DIR":                        "Local folder where logical backup run folders are created.",
 		"BACKUP_LOG_DIR":                    "Folder for daily logs, per-run logs, run history, schedule state, and temporary overrides.",
 		"BACKUP_SYSTEMD_SERVICE_NAME":       "User-level systemd service unit name for the backup runner.",
