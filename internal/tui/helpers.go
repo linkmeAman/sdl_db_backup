@@ -259,7 +259,7 @@ func formatOverrideValues(values map[string]string) string {
 		"BACKUP_PHYSICAL_SCHEDULE",
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED",
 		"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED",
-		"BACKUP_RETENTION_DAYS",
+		"BACKUP_RETENTION_DAILY",
 	}
 	lines := []string{}
 	for _, key := range keys {
