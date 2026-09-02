@@ -154,16 +154,18 @@ type model struct {
 	systemdView       viewport.Model
 
 	// inspect screen state
-	inspectRun        *backupapp.InspectRun
-	inspectErr        string
-	inspectRunID      string
-	inspectDBIndex    int
-	inspectSearch     string
-	inspectSearchMode bool
+	inspectRun         *backupapp.InspectRun
+	inspectErr         string
+	inspectRunID       string
+	inspectDBIndex     int
+	inspectSearch      string
+	inspectSearchMode  bool
 	inspectSearchInput textinput.Model
 
 	logView       viewport.Model
 	logLines      []string
+	logErr        string
+	logPath       string
 	logFilter     string
 	logFollow     bool
 	logSource     string
@@ -223,6 +225,7 @@ type scopeTablesMsg struct {
 
 type logsMsg struct {
 	source  string
+	path    string
 	lines   []string
 	missing bool
 	err     error
@@ -577,14 +580,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case logsMsg:
 		if msg.err != nil {
-			m.pushToast("error", "log load failed: "+msg.err.Error())
+			m.logSource = msg.source
+			m.logPath = msg.path
+			m.logErr = msg.err.Error()
+			m.logLines = nil
+			m.updateLogViewport()
+			m.pushToast("error", "could not load "+msg.source+" logs")
 		} else if msg.missing {
 			m.logSource = msg.source
+			m.logPath = msg.path
+			m.logErr = ""
 			m.logLines = msg.lines
 			m.updateLogViewport()
 			m.pushToast("info", msg.source+" log has not been created yet")
 		} else {
 			m.logSource = msg.source
+			m.logPath = msg.path
+			m.logErr = ""
 			m.logLines = msg.lines
 			m.updateLogViewport()
 			m.pushToast("ok", "loaded "+msg.source+" logs")
@@ -787,7 +799,11 @@ func (m model) screenRefreshCmd() tea.Cmd {
 	case screenHistory:
 		return loadHistory(m.cfg.RunLogPath)
 	case screenLogs:
-		return loadLogs("daily", filepath.Join(m.cfg.LogDir, time.Now().Format("2006-01-02")+".log"))
+		path := m.logPath
+		if path == "" {
+			path = filepath.Join(m.cfg.LogDir, time.Now().Format("2006-01-02")+".log")
+		}
+		return loadLogs(m.logSource, path)
 	case screenSystemd:
 		return loadSystemd(m.envPath)
 	default:
@@ -1340,6 +1356,7 @@ func fitCell(text string, width int) string {
 func (m *model) confirm(message string, action func() tea.Cmd) {
 	m.confirmMessage = message
 	m.confirmAction = action
+	m.confirmSelected = 0
 }
 
 func (m *model) pushToast(level, text string) {

@@ -280,7 +280,7 @@ func readExistingBackupMetricsSnapshot(path string) backupMetricsSnapshot {
 
 	snapshot := backupMetricsSnapshot{
 		LogicalValidationStatus: -1,
-		DatabaseRowCounts: make(map[string]int64),
+		DatabaseRowCounts:       make(map[string]int64),
 	}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

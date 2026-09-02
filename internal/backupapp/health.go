@@ -89,6 +89,11 @@ func checkPhysicalHealth(cfg config) HealthCheck {
 		check.Message = "physical backup is disabled in config"
 		return check
 	}
+	if cfg.DBEngine != "mysql" {
+		check.Status = "error"
+		check.Message = "physical backups are supported only for DB_ENGINE=mysql"
+		return check
+	}
 	if !cfg.PhysicalS3UploadEnabled {
 		check.Status = "disabled"
 		check.Message = "physical backup is skipped because BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false"
@@ -122,6 +127,11 @@ func checkPhysicalHealth(cfg config) HealthCheck {
 	if cfg.S3Bucket == "" {
 		check.Status = "error"
 		check.Message = "physical backup requires BACKUP_S3_BUCKET"
+		return check
+	}
+	if cfg.S3Region == "" {
+		check.Status = "error"
+		check.Message = "physical backup requires BACKUP_S3_REGION"
 		return check
 	}
 	if cfg.S3KeyID == "" || cfg.S3KeySecret == "" {

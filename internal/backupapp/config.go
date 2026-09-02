@@ -18,83 +18,88 @@ import (
 type Config = config
 
 type config struct {
-	DBUser                  string
-	DBPass                  string
-	DBEngine                string
-	DBHost                  string
-	DBPort                  string
-	BackupDir               string
-	LogDir                  string
-	RunLogPath              string
-	MetricsFile             string
-	LockFile                string
-	ServiceUnitName         string
-	TimerUnitName           string
-	MySQLBin                string
-	MySQLDumpBin            string
-	RetryCount              int
-	RetentionDaily          int
-	RetentionWeekly         int
-	RetentionMonthly        int
-	LogicalEnabled          bool
-	LogicalTimeoutPerDB     time.Duration
-	ExactRowCounts          bool
-	SampleDataChecks        bool
-	SampleDataRows          int
-	LogicalParallel         int
-	LogicalGzipLevel        int
-	LogicalS3UploadEnabled  bool
-	LogicalSchedule         string
-	EncryptionKey           string
-	LogicalDatabases        []string
-	LogicalTables           map[string][]string
-	PhysicalSchedule        string
-	PhysicalTimeout         time.Duration
-	DiscoveryTimeout        time.Duration
-	PreflightTimeout        time.Duration
-	RetryBaseDelay          time.Duration
-	RetryMaxDelay           time.Duration
-	CleanupFailFatal        bool
-	S3UploadURL             string
-	S3UploadTimeout         time.Duration
-	S3UploadMode            string
-	S3PHPBin                string
-	S3UploadScript          string
-	S3LogicalPrefix         string
-	S3PhysicalPrefix        string
-	S3Bucket                string
-	S3Region                string
-	S3KeyID                 string
-	S3KeySecret             string
-	XbcloudBin              string
-	XbcloudParallel         int
-	XbcloudFIFOStreams      int
-	PhysicalEnabled         bool
-	PhysicalS3UploadEnabled bool
-	XtrabackupBin           string
-	XtrabackupParallel      int
-	XtrabackupUser          string
-	XtrabackupPass          string
-	XtrabackupSocket        string
-	XtrabackupRunAsUser     string
-	XtrabackupWorkDir       string
-	APIEnabled              bool
-	APIListenAddr           string
-	APIBasePath             string
-	APIAuthEnabled          bool
-	APIBearerToken          string
-	ExecutionSource         string
-	PreflightOnly           bool
-	MetricsJob              string
-	MetricsService          string
-	MetricsEnv              string
-	MetricsRegion           string
-	RestoreTestEnabled      bool
-	RestoreTestHost         string
-	RestoreTestPort         string
-	RestoreTestUser         string
-	RestoreTestPass         string
-	AllowRootRunner         bool
+	DBUser                    string
+	DBPass                    string
+	DBEngine                  string
+	DBHost                    string
+	DBPort                    string
+	BackupDir                 string
+	LogDir                    string
+	RunLogPath                string
+	MetricsFile               string
+	LockFile                  string
+	ServiceUnitName           string
+	TimerUnitName             string
+	MySQLBin                  string
+	MySQLDumpBin              string
+	RetryCount                int
+	RetentionDaily            int
+	RetentionWeekly           int
+	RetentionMonthly          int
+	RetentionMinVerified      int
+	LogicalEnabled            bool
+	LogicalTimeoutPerDB       time.Duration
+	ExactRowCounts            bool
+	SampleDataChecks          bool
+	SampleDataRows            int
+	LogicalParallel           int
+	LogicalGzipLevel          int
+	LogicalS3UploadEnabled    bool
+	RequireRemoteCompletion   bool
+	LogicalSchedule           string
+	EncryptionKey             string
+	LogicalDatabases          []string
+	LogicalTables             map[string][]string
+	PhysicalSchedule          string
+	PhysicalTimeout           time.Duration
+	DiscoveryTimeout          time.Duration
+	PreflightTimeout          time.Duration
+	RetryBaseDelay            time.Duration
+	RetryMaxDelay             time.Duration
+	CleanupFailFatal          bool
+	AllowObjectOmissions      bool
+	MySQLPITRMetadataEnabled  bool
+	MySQLPITRMetadataRequired bool
+	S3UploadURL               string
+	S3UploadTimeout           time.Duration
+	S3UploadMode              string
+	S3PHPBin                  string
+	S3UploadScript            string
+	S3LogicalPrefix           string
+	S3PhysicalPrefix          string
+	S3Bucket                  string
+	S3Region                  string
+	S3KeyID                   string
+	S3KeySecret               string
+	XbcloudBin                string
+	XbcloudParallel           int
+	XbcloudFIFOStreams        int
+	PhysicalEnabled           bool
+	PhysicalS3UploadEnabled   bool
+	XtrabackupBin             string
+	XtrabackupParallel        int
+	XtrabackupUser            string
+	XtrabackupPass            string
+	XtrabackupSocket          string
+	XtrabackupRunAsUser       string
+	XtrabackupWorkDir         string
+	APIEnabled                bool
+	APIListenAddr             string
+	APIBasePath               string
+	APIAuthEnabled            bool
+	APIBearerToken            string
+	ExecutionSource           string
+	PreflightOnly             bool
+	MetricsJob                string
+	MetricsService            string
+	MetricsEnv                string
+	MetricsRegion             string
+	RestoreTestEnabled        bool
+	RestoreTestHost           string
+	RestoreTestPort           string
+	RestoreTestUser           string
+	RestoreTestPass           string
+	AllowRootRunner           bool
 }
 
 func getenv(key, fallback string) string {
@@ -290,84 +295,98 @@ func loadConfigFromValues(values map[string]string) config {
 	}
 	s3KeyID := getMapValueAny(values, "BACKUP_S3_KEY_ID", "BACKUP_S3_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
 	s3KeySecret := getMapValueAny(values, "BACKUP_S3_KEY_SECRET", "BACKUP_S3_SECRET_KEY", "AWS_SECRET_ACCESS_KEY")
+	dbEngine := strings.ToLower(getMapValue(values, "DB_ENGINE", "mysql"))
+	dbPortDefault := "3306"
+	restorePortDefault := "3306"
+	restoreUserDefault := "root"
+	if dbEngine == "postgres" {
+		dbPortDefault = "5432"
+		restorePortDefault = "5432"
+		restoreUserDefault = "postgres"
+	}
 
 	return config{
-		DBUser:                  dbUser,
-		DBPass:                  dbPass,
-		DBEngine:                strings.ToLower(getMapValue(values, "DB_ENGINE", "mysql")),
-		DBHost:                  getMapValue(values, "DB_HOST", "127.0.0.1"),
-		DBPort:                  getMapValue(values, "DB_PORT", "3306"),
-		BackupDir:               backupDir,
-		LogDir:                  logDir,
-		RunLogPath:              filepath.Join(logDir, "backup-runs.jsonl"),
-		MetricsFile:             getMapValue(values, "BACKUP_METRICS_FILE", defaultMetricsFilePath),
-		LockFile:                getMapValue(values, "BACKUP_LOCK_FILE", filepath.Join(logDir, "backup.lock")),
-		ServiceUnitName:         getMapValue(values, "BACKUP_SYSTEMD_SERVICE_NAME", "sdl-db-backup.service"),
-		TimerUnitName:           getMapValue(values, "BACKUP_SYSTEMD_TIMER_NAME", "sdl-db-backup.timer"),
-		MySQLBin:                getMapValue(values, "MYSQL_BIN", "mysql"),
-		MySQLDumpBin:            getMapValue(values, "MYSQLDUMP_BIN", "mysqldump"),
-		RetryCount:              getMapInt(values, "BACKUP_RETRY_COUNT", 3),
-		RetentionDaily:          getMapInt(values, "BACKUP_RETENTION_DAILY", 7),
-		RetentionWeekly:         getMapInt(values, "BACKUP_RETENTION_WEEKLY", 4),
-		RetentionMonthly:        getMapInt(values, "BACKUP_RETENTION_MONTHLY", 12),
-		LogicalEnabled:          getMapBool(values, "BACKUP_LOGICAL_ENABLED", true),
-		LogicalTimeoutPerDB:     logicalTimeoutPerDB,
-		ExactRowCounts:          getMapBool(values, "BACKUP_EXACT_ROW_COUNTS", false),
-		SampleDataChecks:        getMapBool(values, "BACKUP_SAMPLE_DATA_CHECKS", false),
-		SampleDataRows:          max(1, getMapInt(values, "BACKUP_SAMPLE_DATA_ROWS", 50)),
-		LogicalParallel:         getMapInt(values, "BACKUP_LOGICAL_PARALLEL", 2),
-		LogicalGzipLevel:        getMapInt(values, "BACKUP_LOGICAL_GZIP_LEVEL", 1),
-		LogicalS3UploadEnabled:  getMapBool(values, "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", true),
-		LogicalSchedule:         getMapValue(values, "BACKUP_LOGICAL_SCHEDULE", "always"),
-		LogicalDatabases:        parseCSVList(getMapValue(values, "BACKUP_LOGICAL_DATABASES", "")),
-		LogicalTables:           parseTableScope(getMapValue(values, "BACKUP_LOGICAL_TABLES", "")),
-		PhysicalSchedule:        getMapValue(values, "BACKUP_PHYSICAL_SCHEDULE", "always"),
-		PhysicalTimeout:         getMapDuration(values, "BACKUP_PHYSICAL_TIMEOUT", 6*time.Hour),
-		DiscoveryTimeout:        getMapDuration(values, "BACKUP_DISCOVERY_TIMEOUT", 30*time.Second),
-		PreflightTimeout:        getMapDuration(values, "BACKUP_PREFLIGHT_TIMEOUT", 15*time.Second),
-		RetryBaseDelay:          getMapDuration(values, "BACKUP_RETRY_BASE_DELAY", 2*time.Second),
-		RetryMaxDelay:           getMapDuration(values, "BACKUP_RETRY_MAX_DELAY", 20*time.Second),
-		CleanupFailFatal:        getMapBool(values, "BACKUP_CLEANUP_FAIL_FATAL", false),
-		S3UploadURL:             getMapValue(values, "BACKUP_S3_UPLOAD_URL", ""),
-		S3UploadTimeout:         getMapDuration(values, "BACKUP_S3_UPLOAD_TIMEOUT", 2*time.Hour),
-		S3UploadMode:            strings.ToLower(getMapValue(values, "BACKUP_S3_UPLOAD_MODE", "direct")),
-		S3PHPBin:                getMapValue(values, "BACKUP_S3_PHP_BIN", "php"),
-		S3UploadScript:          getMapValue(values, "BACKUP_S3_UPLOAD_SCRIPT", ""),
-		S3LogicalPrefix:         getMapValue(values, "BACKUP_S3_LOGICAL_PREFIX", "logical"),
-		S3PhysicalPrefix:        getMapValue(values, "BACKUP_S3_PHYSICAL_PREFIX", "backup-as-it-is"),
-		S3Bucket:                getMapValue(values, "BACKUP_S3_BUCKET", "ticklerightbackups"),
-		S3Region:                getMapValue(values, "BACKUP_S3_REGION", "ap-south-1"),
-		S3KeyID:                 s3KeyID,
-		S3KeySecret:             s3KeySecret,
-		EncryptionKey:           getMapValue(values, "BACKUP_ENCRYPTION_KEY", ""),
-		XbcloudBin:              getMapValue(values, "BACKUP_XBCLOUD_BIN", "xbcloud"),
-		XbcloudParallel:         getMapInt(values, "BACKUP_XBCLOUD_PARALLEL", 2),
-		XbcloudFIFOStreams:      getMapInt(values, "BACKUP_XBCLOUD_FIFO_STREAMS", 1),
-		PhysicalEnabled:         getMapBool(values, "BACKUP_PHYSICAL_ENABLED", true),
-		PhysicalS3UploadEnabled: getMapBool(values, "BACKUP_PHYSICAL_S3_UPLOAD_ENABLED", true),
-		XtrabackupBin:           getMapValue(values, "BACKUP_XTRABACKUP_BIN", "xtrabackup"),
-		XtrabackupParallel:      getMapInt(values, "BACKUP_XTRABACKUP_PARALLEL", 4),
-		XtrabackupUser:          getMapValue(values, "BACKUP_XTRABACKUP_USER", dbUser),
-		XtrabackupPass:          getMapValue(values, "BACKUP_XTRABACKUP_PASS", dbPass),
-		XtrabackupSocket:        getMapValue(values, "BACKUP_XTRABACKUP_SOCKET", ""),
-		XtrabackupRunAsUser:     getMapValue(values, "BACKUP_XTRABACKUP_RUN_AS_USER", ""),
-		XtrabackupWorkDir:       getMapValue(values, "BACKUP_XTRABACKUP_WORK_DIR", "/mnt/volume_1/backup/xtrabackup-tmp"),
-		APIEnabled:              getMapBool(values, "BACKUP_API_ENABLED", false),
-		APIListenAddr:           getMapValue(values, "BACKUP_API_LISTEN_ADDR", "127.0.0.1:8086"),
-		APIBasePath:             getMapValue(values, "BACKUP_API_BASE_PATH", "/api/v1"),
-		APIAuthEnabled:          getMapBool(values, "BACKUP_API_AUTH_ENABLED", false),
-		APIBearerToken:          getMapValue(values, "BACKUP_API_BEARER_TOKEN", ""),
-		ExecutionSource:         getMapValue(values, "BACKUP_EXECUTION_SOURCE", "runner"),
-		MetricsJob:              getMapValue(values, "BACKUP_METRICS_JOB", "sdl_db_backup"),
-		MetricsService:          getMapValue(values, "BACKUP_METRICS_SERVICE", "mysql"),
-		MetricsEnv:              getMapValue(values, "BACKUP_METRICS_ENV", "pilot"),
-		MetricsRegion:           getMapValue(values, "BACKUP_METRICS_REGION", ""),
-		RestoreTestEnabled:      strings.ToLower(getMapValue(values, "RESTORE_TEST_ENABLED", "false")) == "true",
-		RestoreTestHost:         getMapValue(values, "RESTORE_TEST_HOST", ""),
-		RestoreTestPort:         getMapValue(values, "RESTORE_TEST_PORT", "3306"),
-		RestoreTestUser:         getMapValue(values, "RESTORE_TEST_USER", "root"),
-		RestoreTestPass:         getMapValue(values, "RESTORE_TEST_PASS", ""),
-		AllowRootRunner:         getMapBool(values, "BACKUP_ALLOW_ROOT_RUNNER", true),
+		DBUser:                    dbUser,
+		DBPass:                    dbPass,
+		DBEngine:                  dbEngine,
+		DBHost:                    getMapValue(values, "DB_HOST", "127.0.0.1"),
+		DBPort:                    getMapValue(values, "DB_PORT", dbPortDefault),
+		BackupDir:                 backupDir,
+		LogDir:                    logDir,
+		RunLogPath:                filepath.Join(logDir, "backup-runs.jsonl"),
+		MetricsFile:               getMapValue(values, "BACKUP_METRICS_FILE", defaultMetricsFilePath),
+		LockFile:                  getMapValue(values, "BACKUP_LOCK_FILE", filepath.Join(logDir, "backup.lock")),
+		ServiceUnitName:           getMapValue(values, "BACKUP_SYSTEMD_SERVICE_NAME", "sdl-db-backup.service"),
+		TimerUnitName:             getMapValue(values, "BACKUP_SYSTEMD_TIMER_NAME", "sdl-db-backup.timer"),
+		MySQLBin:                  getMapValue(values, "MYSQL_BIN", "mysql"),
+		MySQLDumpBin:              getMapValue(values, "MYSQLDUMP_BIN", "mysqldump"),
+		RetryCount:                getMapInt(values, "BACKUP_RETRY_COUNT", 3),
+		RetentionDaily:            getMapInt(values, "BACKUP_RETENTION_DAILY", 7),
+		RetentionWeekly:           getMapInt(values, "BACKUP_RETENTION_WEEKLY", 4),
+		RetentionMonthly:          getMapInt(values, "BACKUP_RETENTION_MONTHLY", 12),
+		RetentionMinVerified:      getMapInt(values, "BACKUP_RETENTION_MIN_VERIFIED", 1),
+		LogicalEnabled:            getMapBool(values, "BACKUP_LOGICAL_ENABLED", true),
+		LogicalTimeoutPerDB:       logicalTimeoutPerDB,
+		ExactRowCounts:            getMapBool(values, "BACKUP_EXACT_ROW_COUNTS", false),
+		SampleDataChecks:          getMapBool(values, "BACKUP_SAMPLE_DATA_CHECKS", false),
+		SampleDataRows:            max(1, getMapInt(values, "BACKUP_SAMPLE_DATA_ROWS", 50)),
+		LogicalParallel:           getMapInt(values, "BACKUP_LOGICAL_PARALLEL", 2),
+		LogicalGzipLevel:          getMapInt(values, "BACKUP_LOGICAL_GZIP_LEVEL", 1),
+		LogicalS3UploadEnabled:    getMapBool(values, "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", false),
+		RequireRemoteCompletion:   getMapBool(values, "BACKUP_REQUIRE_REMOTE_COMPLETION", true),
+		LogicalSchedule:           getMapValue(values, "BACKUP_LOGICAL_SCHEDULE", "always"),
+		LogicalDatabases:          parseCSVList(getMapValue(values, "BACKUP_LOGICAL_DATABASES", "")),
+		LogicalTables:             parseTableScope(getMapValue(values, "BACKUP_LOGICAL_TABLES", "")),
+		PhysicalSchedule:          getMapValue(values, "BACKUP_PHYSICAL_SCHEDULE", "always"),
+		PhysicalTimeout:           getMapDuration(values, "BACKUP_PHYSICAL_TIMEOUT", 6*time.Hour),
+		DiscoveryTimeout:          getMapDuration(values, "BACKUP_DISCOVERY_TIMEOUT", 30*time.Second),
+		PreflightTimeout:          getMapDuration(values, "BACKUP_PREFLIGHT_TIMEOUT", 15*time.Second),
+		RetryBaseDelay:            getMapDuration(values, "BACKUP_RETRY_BASE_DELAY", 2*time.Second),
+		RetryMaxDelay:             getMapDuration(values, "BACKUP_RETRY_MAX_DELAY", 20*time.Second),
+		CleanupFailFatal:          getMapBool(values, "BACKUP_CLEANUP_FAIL_FATAL", false),
+		AllowObjectOmissions:      getMapBool(values, "BACKUP_ALLOW_OBJECT_OMISSIONS", false),
+		MySQLPITRMetadataEnabled:  getMapBool(values, "BACKUP_MYSQL_PITR_METADATA_ENABLED", false) || getMapBool(values, "BACKUP_MYSQL_PITR_METADATA_REQUIRED", false),
+		MySQLPITRMetadataRequired: getMapBool(values, "BACKUP_MYSQL_PITR_METADATA_REQUIRED", false),
+		S3UploadURL:               getMapValue(values, "BACKUP_S3_UPLOAD_URL", ""),
+		S3UploadTimeout:           getMapDuration(values, "BACKUP_S3_UPLOAD_TIMEOUT", 2*time.Hour),
+		S3UploadMode:              strings.ToLower(getMapValue(values, "BACKUP_S3_UPLOAD_MODE", "direct")),
+		S3PHPBin:                  getMapValue(values, "BACKUP_S3_PHP_BIN", "php"),
+		S3UploadScript:            getMapValue(values, "BACKUP_S3_UPLOAD_SCRIPT", ""),
+		S3LogicalPrefix:           getMapValue(values, "BACKUP_S3_LOGICAL_PREFIX", "logical"),
+		S3PhysicalPrefix:          getMapValue(values, "BACKUP_S3_PHYSICAL_PREFIX", "backup-as-it-is"),
+		S3Bucket:                  getMapValue(values, "BACKUP_S3_BUCKET", ""),
+		S3Region:                  getMapValue(values, "BACKUP_S3_REGION", "ap-south-1"),
+		S3KeyID:                   s3KeyID,
+		S3KeySecret:               s3KeySecret,
+		EncryptionKey:             getMapValue(values, "BACKUP_ENCRYPTION_KEY", ""),
+		XbcloudBin:                getMapValue(values, "BACKUP_XBCLOUD_BIN", "xbcloud"),
+		XbcloudParallel:           getMapInt(values, "BACKUP_XBCLOUD_PARALLEL", 2),
+		XbcloudFIFOStreams:        getMapInt(values, "BACKUP_XBCLOUD_FIFO_STREAMS", 1),
+		PhysicalEnabled:           getMapBool(values, "BACKUP_PHYSICAL_ENABLED", false),
+		PhysicalS3UploadEnabled:   getMapBool(values, "BACKUP_PHYSICAL_S3_UPLOAD_ENABLED", false),
+		XtrabackupBin:             getMapValue(values, "BACKUP_XTRABACKUP_BIN", "xtrabackup"),
+		XtrabackupParallel:        getMapInt(values, "BACKUP_XTRABACKUP_PARALLEL", 4),
+		XtrabackupUser:            getMapValue(values, "BACKUP_XTRABACKUP_USER", dbUser),
+		XtrabackupPass:            getMapValue(values, "BACKUP_XTRABACKUP_PASS", dbPass),
+		XtrabackupSocket:          getMapValue(values, "BACKUP_XTRABACKUP_SOCKET", ""),
+		XtrabackupRunAsUser:       getMapValue(values, "BACKUP_XTRABACKUP_RUN_AS_USER", ""),
+		XtrabackupWorkDir:         getMapValue(values, "BACKUP_XTRABACKUP_WORK_DIR", "/mnt/volume_1/backup/xtrabackup-tmp"),
+		APIEnabled:                getMapBool(values, "BACKUP_API_ENABLED", false),
+		APIListenAddr:             getMapValue(values, "BACKUP_API_LISTEN_ADDR", "127.0.0.1:8086"),
+		APIBasePath:               getMapValue(values, "BACKUP_API_BASE_PATH", "/api/v1"),
+		APIAuthEnabled:            getMapBool(values, "BACKUP_API_AUTH_ENABLED", false),
+		APIBearerToken:            getMapValue(values, "BACKUP_API_BEARER_TOKEN", ""),
+		ExecutionSource:           getMapValue(values, "BACKUP_EXECUTION_SOURCE", "runner"),
+		MetricsJob:                getMapValue(values, "BACKUP_METRICS_JOB", "sdl_db_backup"),
+		MetricsService:            getMapValue(values, "BACKUP_METRICS_SERVICE", "mysql"),
+		MetricsEnv:                getMapValue(values, "BACKUP_METRICS_ENV", "pilot"),
+		MetricsRegion:             getMapValue(values, "BACKUP_METRICS_REGION", ""),
+		RestoreTestEnabled:        strings.ToLower(getMapValue(values, "RESTORE_TEST_ENABLED", "false")) == "true",
+		RestoreTestHost:           getMapValue(values, "RESTORE_TEST_HOST", ""),
+		RestoreTestPort:           getMapValue(values, "RESTORE_TEST_PORT", restorePortDefault),
+		RestoreTestUser:           getMapValue(values, "RESTORE_TEST_USER", restoreUserDefault),
+		RestoreTestPass:           getMapValue(values, "RESTORE_TEST_PASS", ""),
+		AllowRootRunner:           getMapBool(values, "BACKUP_ALLOW_ROOT_RUNNER", false),
 	}
 }
 
@@ -504,7 +523,7 @@ func SaveTemporaryOverrides(envPath string, overrides TemporaryOverrides) error 
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(TemporaryOverridePath(base), append(data, '\n'), 0o640)
+	return atomicWriteFile(TemporaryOverridePath(base), append(data, '\n'), 0o640)
 }
 
 func ClearTemporaryOverrides(envPath string) error {
@@ -547,6 +566,7 @@ func managedEnvKeys() []string {
 		"BACKUP_LOGICAL_PARALLEL",
 		"BACKUP_LOGICAL_GZIP_LEVEL",
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED",
+		"BACKUP_REQUIRE_REMOTE_COMPLETION",
 		"BACKUP_PHYSICAL_ENABLED",
 		"BACKUP_PHYSICAL_SCHEDULE",
 		"BACKUP_PHYSICAL_TIMEOUT",
@@ -557,7 +577,11 @@ func managedEnvKeys() []string {
 		"BACKUP_RETENTION_DAILY",
 		"BACKUP_RETENTION_WEEKLY",
 		"BACKUP_RETENTION_MONTHLY",
+		"BACKUP_RETENTION_MIN_VERIFIED",
 		"BACKUP_CLEANUP_FAIL_FATAL",
+		"BACKUP_ALLOW_OBJECT_OMISSIONS",
+		"BACKUP_MYSQL_PITR_METADATA_ENABLED",
+		"BACKUP_MYSQL_PITR_METADATA_REQUIRED",
 		"BACKUP_LOCK_FILE",
 		"BACKUP_S3_UPLOAD_URL",
 		"BACKUP_S3_UPLOAD_TIMEOUT",
@@ -594,80 +618,85 @@ func managedEnvKeys() []string {
 
 func envMapFromConfig(cfg Config) map[string]string {
 	values := map[string]string{
-		"DB_USER":                           cfg.DBUser,
-		"DB_PASS":                           cfg.DBPass,
-		"DB_ENGINE":                         cfg.DBEngine,
-		"DB_HOST":                           cfg.DBHost,
-		"DB_PORT":                           cfg.DBPort,
-		"BACKUP_DIR":                        cfg.BackupDir,
-		"BACKUP_LOG_DIR":                    cfg.LogDir,
-		"BACKUP_METRICS_FILE":               cfg.MetricsFile,
-		"BACKUP_SYSTEMD_SERVICE_NAME":       cfg.ServiceUnitName,
-		"BACKUP_SYSTEMD_TIMER_NAME":         cfg.TimerUnitName,
-		"MYSQL_BIN":                         cfg.MySQLBin,
-		"MYSQLDUMP_BIN":                     cfg.MySQLDumpBin,
-		"BACKUP_RETRY_COUNT":                strconv.Itoa(cfg.RetryCount),
-		"BACKUP_RETRY_BASE_DELAY":           cfg.RetryBaseDelay.String(),
-		"BACKUP_RETRY_MAX_DELAY":            cfg.RetryMaxDelay.String(),
-		"BACKUP_LOGICAL_ENABLED":            strconv.FormatBool(cfg.LogicalEnabled),
-		"BACKUP_EXACT_ROW_COUNTS":           strconv.FormatBool(cfg.ExactRowCounts),
-		"BACKUP_SAMPLE_DATA_CHECKS":         strconv.FormatBool(cfg.SampleDataChecks),
-		"BACKUP_SAMPLE_DATA_ROWS":           strconv.Itoa(cfg.SampleDataRows),
-		"BACKUP_LOGICAL_SCHEDULE":           cfg.LogicalSchedule,
-		"BACKUP_LOGICAL_DATABASES":          strings.Join(cfg.LogicalDatabases, ","),
-		"BACKUP_LOGICAL_TABLES":             formatTableScope(cfg.LogicalTables),
-		"BACKUP_LOGICAL_TIMEOUT_PER_DB":     cfg.LogicalTimeoutPerDB.String(),
-		"BACKUP_LOGICAL_PARALLEL":           strconv.Itoa(cfg.LogicalParallel),
-		"BACKUP_LOGICAL_GZIP_LEVEL":         strconv.Itoa(cfg.LogicalGzipLevel),
-		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED":  strconv.FormatBool(cfg.LogicalS3UploadEnabled),
-		"BACKUP_PHYSICAL_ENABLED":           strconv.FormatBool(cfg.PhysicalEnabled),
-		"BACKUP_PHYSICAL_SCHEDULE":          cfg.PhysicalSchedule,
-		"BACKUP_PHYSICAL_TIMEOUT":           cfg.PhysicalTimeout.String(),
-		"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED": strconv.FormatBool(cfg.PhysicalS3UploadEnabled),
-		"BACKUP_ENCRYPTION_KEY":             cfg.EncryptionKey,
-		"BACKUP_DISCOVERY_TIMEOUT":          cfg.DiscoveryTimeout.String(),
-		"BACKUP_PREFLIGHT_TIMEOUT":          cfg.PreflightTimeout.String(),
-		"BACKUP_RETENTION_DAILY":            strconv.Itoa(cfg.RetentionDaily),
-		"BACKUP_RETENTION_WEEKLY":           strconv.Itoa(cfg.RetentionWeekly),
-		"BACKUP_RETENTION_MONTHLY":          strconv.Itoa(cfg.RetentionMonthly),
-		"BACKUP_CLEANUP_FAIL_FATAL":         strconv.FormatBool(cfg.CleanupFailFatal),
-		"BACKUP_LOCK_FILE":                  cfg.LockFile,
-		"BACKUP_S3_UPLOAD_URL":              cfg.S3UploadURL,
-		"BACKUP_S3_UPLOAD_TIMEOUT":          cfg.S3UploadTimeout.String(),
-		"BACKUP_S3_UPLOAD_MODE":             cfg.S3UploadMode,
-		"BACKUP_S3_PHP_BIN":                 cfg.S3PHPBin,
-		"BACKUP_S3_UPLOAD_SCRIPT":           cfg.S3UploadScript,
-		"BACKUP_S3_BUCKET":                  cfg.S3Bucket,
-		"BACKUP_S3_REGION":                  cfg.S3Region,
-		"BACKUP_S3_LOGICAL_PREFIX":          cfg.S3LogicalPrefix,
-		"BACKUP_S3_PHYSICAL_PREFIX":         cfg.S3PhysicalPrefix,
-		"BACKUP_S3_KEY_ID":                  cfg.S3KeyID,
-		"BACKUP_S3_KEY_SECRET":              cfg.S3KeySecret,
-		"BACKUP_XBCLOUD_BIN":                cfg.XbcloudBin,
-		"BACKUP_XBCLOUD_PARALLEL":           strconv.Itoa(cfg.XbcloudParallel),
-		"BACKUP_XBCLOUD_FIFO_STREAMS":       strconv.Itoa(cfg.XbcloudFIFOStreams),
-		"BACKUP_XTRABACKUP_BIN":             cfg.XtrabackupBin,
-		"BACKUP_XTRABACKUP_PARALLEL":        strconv.Itoa(cfg.XtrabackupParallel),
-		"BACKUP_XTRABACKUP_USER":            cfg.XtrabackupUser,
-		"BACKUP_XTRABACKUP_PASS":            cfg.XtrabackupPass,
-		"BACKUP_XTRABACKUP_SOCKET":          cfg.XtrabackupSocket,
-		"BACKUP_XTRABACKUP_RUN_AS_USER":     cfg.XtrabackupRunAsUser,
-		"BACKUP_XTRABACKUP_WORK_DIR":        cfg.XtrabackupWorkDir,
-		"BACKUP_API_ENABLED":                strconv.FormatBool(cfg.APIEnabled),
-		"BACKUP_API_LISTEN_ADDR":            cfg.APIListenAddr,
-		"BACKUP_API_BASE_PATH":              cfg.APIBasePath,
-		"BACKUP_API_AUTH_ENABLED":           strconv.FormatBool(cfg.APIAuthEnabled),
-		"BACKUP_API_BEARER_TOKEN":           cfg.APIBearerToken,
-		"BACKUP_METRICS_JOB":                cfg.MetricsJob,
-		"BACKUP_METRICS_SERVICE":            cfg.MetricsService,
-		"BACKUP_METRICS_ENV":                cfg.MetricsEnv,
-		"BACKUP_METRICS_REGION":             cfg.MetricsRegion,
-		"BACKUP_ALLOW_ROOT_RUNNER":          strconv.FormatBool(cfg.AllowRootRunner),
-		"RESTORE_TEST_ENABLED":              fmt.Sprintf("%t", cfg.RestoreTestEnabled),
-		"RESTORE_TEST_HOST":                 cfg.RestoreTestHost,
-		"RESTORE_TEST_PORT":                 cfg.RestoreTestPort,
-		"RESTORE_TEST_USER":                 cfg.RestoreTestUser,
-		"RESTORE_TEST_PASS":                 "***",
+		"DB_USER":                             cfg.DBUser,
+		"DB_PASS":                             cfg.DBPass,
+		"DB_ENGINE":                           cfg.DBEngine,
+		"DB_HOST":                             cfg.DBHost,
+		"DB_PORT":                             cfg.DBPort,
+		"BACKUP_DIR":                          cfg.BackupDir,
+		"BACKUP_LOG_DIR":                      cfg.LogDir,
+		"BACKUP_METRICS_FILE":                 cfg.MetricsFile,
+		"BACKUP_SYSTEMD_SERVICE_NAME":         cfg.ServiceUnitName,
+		"BACKUP_SYSTEMD_TIMER_NAME":           cfg.TimerUnitName,
+		"MYSQL_BIN":                           cfg.MySQLBin,
+		"MYSQLDUMP_BIN":                       cfg.MySQLDumpBin,
+		"BACKUP_RETRY_COUNT":                  strconv.Itoa(cfg.RetryCount),
+		"BACKUP_RETRY_BASE_DELAY":             cfg.RetryBaseDelay.String(),
+		"BACKUP_RETRY_MAX_DELAY":              cfg.RetryMaxDelay.String(),
+		"BACKUP_LOGICAL_ENABLED":              strconv.FormatBool(cfg.LogicalEnabled),
+		"BACKUP_EXACT_ROW_COUNTS":             strconv.FormatBool(cfg.ExactRowCounts),
+		"BACKUP_SAMPLE_DATA_CHECKS":           strconv.FormatBool(cfg.SampleDataChecks),
+		"BACKUP_SAMPLE_DATA_ROWS":             strconv.Itoa(cfg.SampleDataRows),
+		"BACKUP_LOGICAL_SCHEDULE":             cfg.LogicalSchedule,
+		"BACKUP_LOGICAL_DATABASES":            strings.Join(cfg.LogicalDatabases, ","),
+		"BACKUP_LOGICAL_TABLES":               formatTableScope(cfg.LogicalTables),
+		"BACKUP_LOGICAL_TIMEOUT_PER_DB":       cfg.LogicalTimeoutPerDB.String(),
+		"BACKUP_LOGICAL_PARALLEL":             strconv.Itoa(cfg.LogicalParallel),
+		"BACKUP_LOGICAL_GZIP_LEVEL":           strconv.Itoa(cfg.LogicalGzipLevel),
+		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED":    strconv.FormatBool(cfg.LogicalS3UploadEnabled),
+		"BACKUP_REQUIRE_REMOTE_COMPLETION":    strconv.FormatBool(cfg.RequireRemoteCompletion),
+		"BACKUP_PHYSICAL_ENABLED":             strconv.FormatBool(cfg.PhysicalEnabled),
+		"BACKUP_PHYSICAL_SCHEDULE":            cfg.PhysicalSchedule,
+		"BACKUP_PHYSICAL_TIMEOUT":             cfg.PhysicalTimeout.String(),
+		"BACKUP_PHYSICAL_S3_UPLOAD_ENABLED":   strconv.FormatBool(cfg.PhysicalS3UploadEnabled),
+		"BACKUP_ENCRYPTION_KEY":               cfg.EncryptionKey,
+		"BACKUP_DISCOVERY_TIMEOUT":            cfg.DiscoveryTimeout.String(),
+		"BACKUP_PREFLIGHT_TIMEOUT":            cfg.PreflightTimeout.String(),
+		"BACKUP_RETENTION_DAILY":              strconv.Itoa(cfg.RetentionDaily),
+		"BACKUP_RETENTION_WEEKLY":             strconv.Itoa(cfg.RetentionWeekly),
+		"BACKUP_RETENTION_MONTHLY":            strconv.Itoa(cfg.RetentionMonthly),
+		"BACKUP_RETENTION_MIN_VERIFIED":       strconv.Itoa(cfg.RetentionMinVerified),
+		"BACKUP_CLEANUP_FAIL_FATAL":           strconv.FormatBool(cfg.CleanupFailFatal),
+		"BACKUP_ALLOW_OBJECT_OMISSIONS":       strconv.FormatBool(cfg.AllowObjectOmissions),
+		"BACKUP_MYSQL_PITR_METADATA_ENABLED":  strconv.FormatBool(cfg.MySQLPITRMetadataEnabled),
+		"BACKUP_MYSQL_PITR_METADATA_REQUIRED": strconv.FormatBool(cfg.MySQLPITRMetadataRequired),
+		"BACKUP_LOCK_FILE":                    cfg.LockFile,
+		"BACKUP_S3_UPLOAD_URL":                cfg.S3UploadURL,
+		"BACKUP_S3_UPLOAD_TIMEOUT":            cfg.S3UploadTimeout.String(),
+		"BACKUP_S3_UPLOAD_MODE":               cfg.S3UploadMode,
+		"BACKUP_S3_PHP_BIN":                   cfg.S3PHPBin,
+		"BACKUP_S3_UPLOAD_SCRIPT":             cfg.S3UploadScript,
+		"BACKUP_S3_BUCKET":                    cfg.S3Bucket,
+		"BACKUP_S3_REGION":                    cfg.S3Region,
+		"BACKUP_S3_LOGICAL_PREFIX":            cfg.S3LogicalPrefix,
+		"BACKUP_S3_PHYSICAL_PREFIX":           cfg.S3PhysicalPrefix,
+		"BACKUP_S3_KEY_ID":                    cfg.S3KeyID,
+		"BACKUP_S3_KEY_SECRET":                cfg.S3KeySecret,
+		"BACKUP_XBCLOUD_BIN":                  cfg.XbcloudBin,
+		"BACKUP_XBCLOUD_PARALLEL":             strconv.Itoa(cfg.XbcloudParallel),
+		"BACKUP_XBCLOUD_FIFO_STREAMS":         strconv.Itoa(cfg.XbcloudFIFOStreams),
+		"BACKUP_XTRABACKUP_BIN":               cfg.XtrabackupBin,
+		"BACKUP_XTRABACKUP_PARALLEL":          strconv.Itoa(cfg.XtrabackupParallel),
+		"BACKUP_XTRABACKUP_USER":              cfg.XtrabackupUser,
+		"BACKUP_XTRABACKUP_PASS":              cfg.XtrabackupPass,
+		"BACKUP_XTRABACKUP_SOCKET":            cfg.XtrabackupSocket,
+		"BACKUP_XTRABACKUP_RUN_AS_USER":       cfg.XtrabackupRunAsUser,
+		"BACKUP_XTRABACKUP_WORK_DIR":          cfg.XtrabackupWorkDir,
+		"BACKUP_API_ENABLED":                  strconv.FormatBool(cfg.APIEnabled),
+		"BACKUP_API_LISTEN_ADDR":              cfg.APIListenAddr,
+		"BACKUP_API_BASE_PATH":                cfg.APIBasePath,
+		"BACKUP_API_AUTH_ENABLED":             strconv.FormatBool(cfg.APIAuthEnabled),
+		"BACKUP_API_BEARER_TOKEN":             cfg.APIBearerToken,
+		"BACKUP_METRICS_JOB":                  cfg.MetricsJob,
+		"BACKUP_METRICS_SERVICE":              cfg.MetricsService,
+		"BACKUP_METRICS_ENV":                  cfg.MetricsEnv,
+		"BACKUP_METRICS_REGION":               cfg.MetricsRegion,
+		"BACKUP_ALLOW_ROOT_RUNNER":            strconv.FormatBool(cfg.AllowRootRunner),
+		"RESTORE_TEST_ENABLED":                fmt.Sprintf("%t", cfg.RestoreTestEnabled),
+		"RESTORE_TEST_HOST":                   cfg.RestoreTestHost,
+		"RESTORE_TEST_PORT":                   cfg.RestoreTestPort,
+		"RESTORE_TEST_USER":                   cfg.RestoreTestUser,
+		"RESTORE_TEST_PASS":                   "***",
 	}
 	return values
 }

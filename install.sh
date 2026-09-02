@@ -86,10 +86,15 @@ else
     echo -e "${YELLOW}Configuration already exists at $ENV_FILE. Skipping .env creation.${NC}"
 fi
 
-# Ensure BACKUP_ALLOW_ROOT_RUNNER=true is set in configuration
-if ! grep -q "^BACKUP_ALLOW_ROOT_RUNNER=" "$ENV_FILE" 2>/dev/null; then
-    echo "BACKUP_ALLOW_ROOT_RUNNER=true" >> "$ENV_FILE"
-    echo -e "${GREEN}Added BACKUP_ALLOW_ROOT_RUNNER=true to $ENV_FILE${NC}"
+# A system-wide install is an explicit request to run the system timer as root.
+# Keep user-scoped installations at the secure default.
+if [ "$IS_ROOT" = true ]; then
+    if grep -q "^BACKUP_ALLOW_ROOT_RUNNER=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s/^BACKUP_ALLOW_ROOT_RUNNER=.*/BACKUP_ALLOW_ROOT_RUNNER=true/" "$ENV_FILE"
+    else
+        echo "BACKUP_ALLOW_ROOT_RUNNER=true" >> "$ENV_FILE"
+    fi
+    echo -e "${GREEN}Enabled BACKUP_ALLOW_ROOT_RUNNER for this explicit system-wide installation.${NC}"
 fi
 
 echo -e "${GREEN}[4/5] Configuring Systemd Background Service...${NC}"

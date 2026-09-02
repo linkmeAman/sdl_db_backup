@@ -108,6 +108,13 @@ func filterDatabases(cfg config, discovered []string) []string {
 func listTables(cfg config, dbName string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.DiscoveryTimeout)
 	defer cancel()
+	if cfg.DBEngine == "postgres" {
+		query := `SELECT tablename FROM pg_tables WHERE schemaname='public'
+UNION ALL
+SELECT viewname FROM pg_views WHERE schemaname='public'
+ORDER BY 1`
+		return readNamesQuery(dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query), "postgres table discovery")
+	}
 	query := fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=%q AND TABLE_TYPE IN ('BASE TABLE','VIEW') ORDER BY TABLE_NAME", dbName)
 	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
 	out, err := cmd.CombinedOutput()
@@ -408,7 +415,9 @@ func getDatabaseSampleRowHashes(cfg config, dbName string, limit int) (map[strin
 		var cmd *exec.Cmd
 		if cfg.DBEngine == "postgres" {
 			query = "SELECT * FROM " + quoteIdentifier(cfg.DBEngine, tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
-			cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-F", "\t", "-c", query)
+			// Disable psqlrc so the canonical sample serialization matches the
+			// restore validator regardless of a backup host's local psql settings.
+			cmd = dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-X", "-A", "-t", "-F", "\t", "-c", query)
 		} else {
 			query = "SELECT * FROM " + quoteIdentifier(cfg.DBEngine, dbName) + "." + quoteIdentifier(cfg.DBEngine, tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
 			cmd = dbCmdContext(ctx, cfg, cfg.MySQLBin, "--batch", "--raw", "--skip-column-names", "-e", query)
@@ -604,13 +613,29 @@ func fileSHA256(path string) (string, error) {
 }
 
 func gzipPayloadSHA256(path string) (string, error) {
+	return gzipPayloadSHA256WithEncryption(path, "")
+}
+
+func gzipPayloadSHA256WithEncryption(path string, encryptionKey string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 
-	gz, err := gzip.NewReader(file)
+	var source io.Reader = file
+	if encryptedArtifactPath(path) {
+		if strings.TrimSpace(encryptionKey) == "" {
+			return "", errors.New("encrypted artifact requires BACKUP_ENCRYPTION_KEY")
+		}
+		decrypted, err := DecryptReader(file, encryptionKey)
+		if err != nil {
+			return "", err
+		}
+		source = decrypted
+	}
+
+	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return "", err
 	}
@@ -752,6 +777,10 @@ func filterBrokenViewsFromObjects(objects []string, brokenViews []string) []stri
 }
 
 func buildMySQLDumpArgs(dbName string, tables []string, ignoreTables []string) []string {
+	return buildMySQLDumpArgsWithPITR(dbName, tables, ignoreTables, false)
+}
+
+func buildMySQLDumpArgsWithPITR(dbName string, tables []string, ignoreTables []string, includePITRMetadata bool) []string {
 	args := []string{
 		"--single-transaction",
 		"--quick",
@@ -760,14 +789,23 @@ func buildMySQLDumpArgs(dbName string, tables []string, ignoreTables []string) [
 		"--events",
 		"--no-tablespaces",
 		"--set-gtid-purged=OFF",
-		"--force",                       // continue on SQL errors (required for --ignore-error to take effect)
-		"--ignore-error=1356,1449,1227", // skip broken views, missing definers, definer-privilege errors
-		dbName,
 	}
+	if includePITRMetadata {
+		// Keep this as a comment so it is safe to restore normally, while still
+		// binding the binlog coordinate to this dump's transaction snapshot.
+		args = append(args, "--source-data=2")
+	}
+	if len(ignoreTables) > 0 {
+		args = append(args,
+			"--force",                       // required for --ignore-error to take effect
+			"--ignore-error=1356,1449,1227", // only used for explicitly approved omissions
+		)
+		for _, table := range ignoreTables {
+			args = append(args, "--ignore-table="+dbName+"."+table)
+		}
+	}
+	args = append(args, dbName)
 	args = append(args, tables...)
-	for _, table := range ignoreTables {
-		args = append(args, "--ignore-table="+dbName+"."+table)
-	}
 	return args
 }
 
@@ -812,7 +850,12 @@ func normalizedLogicalGzipLevel(value int) int {
 	return value
 }
 
-func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTables []string) (int64, error) {
+type dumpDatabaseOutcome struct {
+	sizeBytes      int64
+	pitrCoordinate *mysqlPITRCoordinate
+}
+
+func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTables []string) (dumpDatabaseOutcome, error) {
 	log.Printf("starting dump for database=%s", dbName)
 	logLogicalTableSummary(dbName, tables)
 
@@ -821,7 +864,7 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 
 	file, err := os.OpenFile(outFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
-		return 0, err
+		return dumpDatabaseOutcome{}, err
 	}
 
 	closeFile := func() {
@@ -831,13 +874,16 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 	}
 
 	var baseWriter io.Writer = file
+	var encryptionCloser io.Closer
 	if cfg.EncryptionKey != "" {
 		encWriter, encErr := EncryptWriter(file, cfg.EncryptionKey)
 		if encErr != nil {
 			closeFile()
-			return 0, fmt.Errorf("setup encryption: %w", encErr)
+			removePartialOutput(outFile)
+			return dumpDatabaseOutcome{}, fmt.Errorf("setup encryption: %w", encErr)
 		}
 		baseWriter = encWriter
+		encryptionCloser = encWriter
 	}
 
 	counter := &countingWriter{writer: baseWriter}
@@ -845,7 +891,7 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 	if err != nil {
 		closeFile()
 		removePartialOutput(outFile)
-		return 0, fmt.Errorf("setup gzip writer: %w", err)
+		return dumpDatabaseOutcome{}, fmt.Errorf("setup gzip writer: %w", err)
 	}
 
 	var cmd *exec.Cmd
@@ -853,14 +899,14 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		args := buildPostgresDumpArgs(dbName, tables, ignoreTables)
 		cmd = dbCmdContext(ctx, cfg, "pg_dump", args...)
 	} else {
-		args := buildMySQLDumpArgs(dbName, tables, ignoreTables)
+		args := buildMySQLDumpArgsWithPITR(dbName, tables, ignoreTables, cfg.MySQLPITRMetadataEnabled)
 		cmd = dbCmdContext(ctx, cfg, cfg.MySQLDumpBin, args...)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		closeFile()
 		removePartialOutput(outFile)
-		return 0, err
+		return dumpDatabaseOutcome{}, err
 	}
 
 	var stderr strings.Builder
@@ -869,16 +915,18 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 	if err := cmd.Start(); err != nil {
 		closeFile()
 		removePartialOutput(outFile)
-		return 0, err
+		return dumpDatabaseOutcome{}, err
 	}
+	coordinateExtractor := newMySQLSourceDataExtractor()
+	copySource := io.TeeReader(stdout, coordinateExtractor)
 
-	if _, err := io.Copy(gz, stdout); err != nil {
+	if _, err := io.Copy(gz, copySource); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		_ = gz.Close()
 		closeFile()
 		removePartialOutput(outFile)
-		return 0, fmt.Errorf("stream mysqldump output: %w", err)
+		return dumpDatabaseOutcome{}, fmt.Errorf("stream mysqldump output: %w", err)
 	}
 
 	if err := gz.Close(); err != nil {
@@ -886,20 +934,29 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		_ = cmd.Wait()
 		closeFile()
 		removePartialOutput(outFile)
-		return 0, fmt.Errorf("finalize gzip: %w", err)
+		return dumpDatabaseOutcome{}, fmt.Errorf("finalize gzip: %w", err)
+	}
+	if encryptionCloser != nil {
+		if err := encryptionCloser.Close(); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			closeFile()
+			removePartialOutput(outFile)
+			return dumpDatabaseOutcome{}, fmt.Errorf("finalize encrypted artifact: %w", err)
+		}
 	}
 
 	if err := file.Close(); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		removePartialOutput(outFile)
-		return 0, fmt.Errorf("close gzip file: %w", err)
+		return dumpDatabaseOutcome{}, fmt.Errorf("close gzip file: %w", err)
 	}
 
 	if err := cmd.Wait(); err != nil {
 		removePartialOutput(outFile)
 		message := strings.TrimSpace(stderr.String())
-		return 0, fmt.Errorf("mysqldump failed (%s): %s", classifyFailure(err, message), chooseFailureMessage(err, message))
+		return dumpDatabaseOutcome{}, fmt.Errorf("mysqldump failed (%s): %s", classifyFailure(err, message), chooseFailureMessage(err, message))
 	}
 
 	// Log any warnings mysqldump emitted (e.g. objects skipped via --ignore-error).
@@ -915,11 +972,16 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 
 	if counter.bytes == 0 {
 		removePartialOutput(outFile)
-		return 0, fmt.Errorf("mysqldump produced empty output for database=%s", dbName)
+		return dumpDatabaseOutcome{}, fmt.Errorf("mysqldump produced empty output for database=%s", dbName)
+	}
+	coordinate := coordinateExtractor.coordinate()
+	if cfg.MySQLPITRMetadataEnabled && cfg.DBEngine == "mysql" && coordinate == nil && cfg.MySQLPITRMetadataRequired {
+		removePartialOutput(outFile)
+		return dumpDatabaseOutcome{}, fmt.Errorf("mysqldump did not emit a source-data binlog coordinate; verify binary logging and BACKUP_MYSQL_PITR_METADATA privileges")
 	}
 
 	log.Printf("completed dump for database=%s output=%s size_bytes=%d", dbName, outFile, counter.bytes)
-	return counter.bytes, nil
+	return dumpDatabaseOutcome{sizeBytes: counter.bytes, pitrCoordinate: coordinate}, nil
 }
 
 func shouldLogDumpLine(line string) bool {
@@ -941,13 +1003,20 @@ func shouldLogDumpLine(line string) bool {
 
 func dumpWithRetry(cfg config, dbName, outFile string, tables []string) databaseResult {
 	started := time.Now()
-	result := databaseResult{Name: dbName, Status: "failed"}
+	result := databaseResult{Name: dbName, Status: "failed", SelectedTables: append([]string(nil), tables...)}
 	brokenViews, precheckErr := discoverBrokenViews(cfg, dbName)
 	if precheckErr != nil {
 		log.Printf("warning: could not precheck views for database=%s: %v", dbName, precheckErr)
 	}
 	if len(brokenViews) > 0 {
 		log.Printf("database=%s: precheck found %d broken view(s), excluding from dump: %s", dbName, len(brokenViews), strings.Join(brokenViews, ", "))
+		if !cfg.AllowObjectOmissions {
+			result.Error = "backup refused because objects would be omitted; set BACKUP_ALLOW_OBJECT_OMISSIONS=true only for an explicitly partial backup: " + strings.Join(brokenViews, ", ")
+			result.ErrorCategory = "schema"
+			result.Duration = time.Since(started).Round(time.Millisecond).String()
+			return result
+		}
+		result.OmittedObjects = append([]string(nil), brokenViews...)
 	}
 
 	for attempt := 1; attempt <= cfg.RetryCount; attempt++ {
@@ -1013,7 +1082,7 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 			}
 		}
 
-		sizeBytes, err := dumpDatabase(cfg, dbName, outFile, tables, brokenViews)
+		dumpOutcome, err := dumpDatabase(cfg, dbName, outFile, tables, brokenViews)
 		if err == nil {
 			artifactHash, hashErr := fileSHA256(outFile)
 			if hashErr != nil {
@@ -1028,7 +1097,7 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 				time.Sleep(delay)
 				continue
 			}
-			sqlHash, sqlHashErr := gzipPayloadSHA256(outFile)
+			sqlHash, sqlHashErr := gzipPayloadSHA256WithEncryption(outFile, cfg.EncryptionKey)
 			if sqlHashErr != nil {
 				result.Error = fmt.Sprintf("compute sql payload hash: %v", sqlHashErr)
 				result.ErrorCategory = "output"
@@ -1043,7 +1112,8 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 			}
 			result.Status = "success"
 			result.OutputPath = outFile
-			result.SizeBytes = sizeBytes
+			result.SizeBytes = dumpOutcome.sizeBytes
+			result.MySQLPITRCoordinate = dumpOutcome.pitrCoordinate
 			result.ArtifactSHA256 = artifactHash
 			result.SQLSHA256 = sqlHash
 			result.Duration = time.Since(started).Round(time.Millisecond).String()
@@ -1154,7 +1224,7 @@ func appendRunRecord(path string, record runRecord) error {
 	if _, err := file.Write(append(encoded, '\n')); err != nil {
 		return err
 	}
-	return nil
+	return file.Sync()
 }
 
 func rewriteRunRecords(path string, runs []runRecord) error {
@@ -1244,7 +1314,7 @@ func writeManifest(runFolder string, record runRecord) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(manifestPath, append(encoded, '\n'), 0o640)
+	return atomicWriteFile(manifestPath, append(encoded, '\n'), 0o640)
 }
 
 func finalizeRun(cfg config, record *runRecord, startedAt time.Time) int {

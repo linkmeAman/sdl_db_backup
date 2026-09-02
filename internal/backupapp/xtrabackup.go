@@ -2,7 +2,11 @@ package backupapp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +17,18 @@ import (
 	"strings"
 	"time"
 )
+
+const physicalCompletionObject = "PHYSICAL_COMPLETED.json"
+
+type physicalCompletionManifest struct {
+	FormatVersion int       `json:"format_version"`
+	CompletedAt   time.Time `json:"completed_at"`
+	RunID         string    `json:"run_id"`
+	Bucket        string    `json:"bucket"`
+	ObjectKey     string    `json:"object_key"`
+	SizeBytes     int64     `json:"size_bytes"`
+	ETag          string    `json:"etag,omitempty"`
+}
 
 func isPhysicalUploadRateLimited(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))
@@ -250,6 +266,11 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		result.Duration = time.Since(started).Round(time.Millisecond).String()
 		return result
 	}
+	if cfg.S3Region == "" {
+		result.Error = "physical backup requires BACKUP_S3_REGION"
+		result.Duration = time.Since(started).Round(time.Millisecond).String()
+		return result
+	}
 	if cfg.S3KeyID == "" || cfg.S3KeySecret == "" {
 		result.Error = "physical backup requires S3 credentials (set BACKUP_S3_KEY_ID and BACKUP_S3_KEY_SECRET, or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"
 		result.Duration = time.Since(started).Round(time.Millisecond).String()
@@ -454,7 +475,53 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 
+	remote, err := headS3Object(ctx, cfg, objectKey)
+	if err != nil {
+		result.Error = fmt.Sprintf("physical backup remote verification failed: %v", err)
+		log.Printf("physical backup: %s", result.Error)
+		return result
+	}
+	if remote.SizeBytes <= 0 {
+		result.Error = "physical backup remote verification failed: streamed object is empty"
+		log.Printf("physical backup: %s", result.Error)
+		return result
+	}
+	completion := physicalCompletionManifest{
+		FormatVersion: 1,
+		CompletedAt:   time.Now().UTC(),
+		RunID:         runID,
+		Bucket:        cfg.S3Bucket,
+		ObjectKey:     objectKey,
+		SizeBytes:     remote.SizeBytes,
+		ETag:          remote.ETag,
+	}
+	completionData, err := json.MarshalIndent(completion, "", "  ")
+	if err != nil {
+		result.Error = fmt.Sprintf("encode physical completion manifest: %v", err)
+		return result
+	}
+	completionData = append(completionData, '\n')
+	completionKey := strings.Trim(strings.TrimSpace(cfg.S3PhysicalPrefix), "/") + "/" + runID + "/" + physicalCompletionObject
+	completionHash := sha256.Sum256(completionData)
+	if _, err := putS3Object(ctx, cfg, completionKey, bytes.NewReader(completionData), int64(len(completionData)), "application/json", hex.EncodeToString(completionHash[:])); err != nil {
+		result.Error = fmt.Sprintf("write physical completion manifest: %v", err)
+		log.Printf("physical backup: %s", result.Error)
+		return result
+	}
+	completionRemote, err := headS3Object(ctx, cfg, completionKey)
+	if err != nil || completionRemote.SizeBytes != int64(len(completionData)) {
+		if err != nil {
+			result.Error = fmt.Sprintf("verify physical completion manifest: %v", err)
+		} else {
+			result.Error = fmt.Sprintf("verify physical completion manifest: expected %d bytes, got %d", len(completionData), completionRemote.SizeBytes)
+		}
+		log.Printf("physical backup: %s", result.Error)
+		return result
+	}
 	result.Status = "success"
+	result.RemoteSizeBytes = remote.SizeBytes
+	result.RemoteETag = remote.ETag
+	result.CompletionObject = fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, completionKey)
 	log.Printf("physical backup: completed successfully target=%s duration=%s", result.TargetDir, result.Duration)
 	return result
 }

@@ -13,7 +13,7 @@ This project is a portable backup application for MySQL with three main operator
 Core behavior:
 - Supports both `mysql` and `postgres` database engines.
 - Logical backups and physical backups can be enabled, scheduled, timed out, and uploaded independently through `.env`.
-- Logical backups create `.sql.gz` files per database (with AES-256-CFB `.enc` encryption if configured) and can upload that run folder to S3 via direct, PHP, or HTTP upload modes.
+- Logical backups create `.sql.gz` files per database (with authenticated AES-256-GCM `.enc` encryption if configured) and can upload that run folder to S3 via direct, PHP, or HTTP upload modes.
 - Physical backups stream `xtrabackup` directly to S3 as `physical.xbstream` and do not create a local physical backup directory.
 - Retries each logical database dump up to the configured retry count.
 - Deletes backup folders using a Grandfather-Father-Son (GFS) rotation strategy to keep daily, weekly, and monthly snapshots.
@@ -21,6 +21,7 @@ Core behavior:
 - Records structured run history in `backup-runs.jsonl`.
 
 If you need implementation history or change tracking, see `CHANGES.md`.
+For recovery drills and required cloud durability controls, see [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md).
 For Prometheus/Grafana monitoring details, full metric definitions, ready-to-paste PromQL selectors, dashboard layout guidance, and alert examples, see [GRAFANA_BACKUP_MONITORING.md](/var/www/go-workspace/sdl/sdl_db_backup/GRAFANA_BACKUP_MONITORING.md).
 
 ## Files
@@ -127,9 +128,21 @@ Logical backup settings:
 - `BACKUP_LOGICAL_PARALLEL=2` controls how many logical databases are dumped concurrently
 - `BACKUP_LOGICAL_GZIP_LEVEL=1` controls gzip speed vs size for logical `.sql.gz` files (`1` fastest, `9` smallest, `0` no compression)
 - `BACKUP_LOGICAL_S3_UPLOAD_ENABLED=true|false`
+- `BACKUP_REQUIRE_REMOTE_COMPLETION=true|false` requires the direct S3 completion manifest and prevents legacy PHP/HTTP upload modes from being treated as recovery-grade remote copies
 - `DB_ENGINE=mysql|postgres`
 - `DB_USER` and `DB_PASS` are used for logical backups (`mysql` / `mysqldump` or `pg_dump`) and should point to a dedicated backup-only user
-- `BACKUP_ENCRYPTION_KEY=...` (optional 32-byte string to enable AES-256-CFB stream encryption)
+- `RESTORE_TEST_ENABLED=true` enables destructive sandbox restore verification against the separately configured `RESTORE_TEST_HOST`, `RESTORE_TEST_PORT`, `RESTORE_TEST_USER`, and `RESTORE_TEST_PASS`; PostgreSQL defaults are port `5432` and user `postgres` (MySQL defaults remain `3306` and `root`)
+- PostgreSQL logical validation requires the `pg_dump` completion marker, and PostgreSQL sandbox restore validation requires `psql` on the backup host; it creates a bounded temporary database, imports with `ON_ERROR_STOP=1`, and verifies the restored public-schema objects and configured data checks
+- `BACKUP_ENCRYPTION_KEY=...` (optional 32-byte raw key or 64-character hexadecimal key to enable authenticated AES-256-GCM stream encryption)
+- `BACKUP_MYSQL_PITR_METADATA_ENABLED=true|false` adds a commented `--source-data=2` binlog coordinate to each MySQL dump and records the pre-dump server GTID/binlog state in `manifest.json`
+- `BACKUP_MYSQL_PITR_METADATA_REQUIRED=true|false` fails logical backup runs when the server observation or any dump coordinate cannot be captured; it implies `..._ENABLED=true`
+
+For MySQL PITR, retain binary logs independently and rehearse their replay. The
+pre-dump server observation is not a single snapshot for parallel dump
+sessions; each successful MySQL result's `mysql_pitr_coordinate` is the
+coordinate associated with that artifact. The backup user typically needs
+`REPLICATION CLIENT` and the privileges required by `mysqldump --source-data`
+(often `RELOAD` or `FLUSH_TABLES`, depending on MySQL version/configuration).
 
 Physical backup settings:
 - `BACKUP_PHYSICAL_ENABLED=true|false`
@@ -139,6 +152,11 @@ Physical backup settings:
 - `BACKUP_XTRABACKUP_USER` and `BACKUP_XTRABACKUP_PASS` are the MySQL credentials used only by physical backup
 - `BACKUP_XTRABACKUP_RUN_AS_USER` is the Linux user used to execute `xtrabackup`, usually `mysql`
 - `BACKUP_XTRABACKUP_WORK_DIR=/mnt/volume_1/backup/xtrabackup-tmp`
+
+Run `sdl-db-backup physical-validate <run-id>` from a dedicated verification
+host to download, extract, and prepare a completed physical stream without
+modifying a MySQL server. See `RECOVERY_OPERATIONS.md` for its prerequisites
+and scheduling requirements.
 
 Shared S3 settings:
 - `BACKUP_S3_BUCKET=...`
@@ -154,6 +172,10 @@ Logical S3 upload settings:
 - `BACKUP_S3_UPLOAD_SCRIPT=/path/to/s3_upload_backup.php`
 - `BACKUP_S3_UPLOAD_URL=https://...`
 - `BACKUP_S3_UPLOAD_TIMEOUT=2h`
+
+Direct uploads use multipart S3 transfer for artifacts of 64 MiB or larger.
+Each part is hashed and retried for transient failures; the completed object is
+still checked with `HEAD` before the run receives its remote completion marker.
 
 API settings:
 - `BACKUP_API_ENABLED=true|false`
@@ -669,7 +691,7 @@ Restore validation routes:
 - `GET /api/v1/restore` returns whether logical validation is available, whether full sandbox restore testing is enabled, which restore-verification depth is configured (`exact_row_counts`, `sample_data_checks`, `sample_data_rows`), and which restore endpoints are supported
 - `POST /api/v1/restore/validate` performs gzip/signature validation on a previous logical backup run using `{"run_id":"..."}`
 - `POST /api/v1/restore/test` performs a full sandbox import test for a previous logical backup run using `{"run_id":"..."}` and requires `RESTORE_TEST_ENABLED=true`
-- Full sandbox restore testing verifies the imported database with exact restored base-table, view, trigger, routine, and event count checks plus a schema fingerprint comparison over those object names/types instead of relying on approximate MySQL row metadata, and it uses a bounded temporary database name safe for MySQL naming limits.
+- Full sandbox restore testing verifies the imported database with exact restored base-table, view, trigger, routine, and event count checks plus a schema fingerprint comparison over those object names/types instead of relying on approximate row metadata. It uses a bounded temporary database name safe for the selected engine's naming limits; PostgreSQL correctly records zero events because PostgreSQL has no event-scheduler object type.
 - If `BACKUP_EXACT_ROW_COUNTS=true` was enabled when the backup was created, sandbox restore testing also verifies the exact restored per-table row counts and the exact restored total row count for each logical database.
 - If `BACKUP_SAMPLE_DATA_CHECKS=true` was enabled when the backup was created, sandbox restore testing also verifies sampled row-content hashes for base tables with primary keys.
 - Logical backup validation also verifies the persisted `.sql.gz` artifact SHA-256 when that hash is present in the run manifest, so corruption or tampering can be detected before restore.
