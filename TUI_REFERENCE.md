@@ -47,7 +47,7 @@ Main regions:
 - Notifications popup: last three command results or state changes.
 - Command palette: opens as a centered thick-bordered panel when active.
 - Confirm panel: opens at the bottom for destructive or important actions.
-- Dashboard, Health, and Systemd bodies render inside bounded viewports so long text can be scrolled instead of pushing the shell layout off-screen.
+- Dashboard, Health, Observability, and Systemd bodies render inside bounded viewports so long text cannot push the shell layout off-screen.
 
 ## Visual Design System
 
@@ -232,7 +232,7 @@ Dashboard
 | daily: /mnt/volume_1/backup/mysql_backup/logs/YYYY-MM-DD.log                |
 +----------------------------------------------------------------------------+
 
-Quick Actions
+Quick Actions (shown first so it remains usable in short terminals)
 b / 2  Manual backup workflow
 3      Schedule manager
 4      Search and edit config
@@ -374,7 +374,7 @@ Purpose: edit schedule and upload toggles permanently or temporarily.
 
 ```text
 Schedule Manager
-enter edit/toggle a apply c clear temporary override s save/apply
+j/k move   enter choose/toggle   a apply   c clear temporary override
 
 Mode: permanent .env change
 
@@ -453,16 +453,16 @@ Purpose: searchable `.env` editor with masked secrets and inline validation.
 
 ```text
 Config Editor
-Search: none   j/k scroll   pgup/pgdown   g/G top/bottom   s save   / search   v reveal
+Search: none   j/k move   enter edit   ctrl+s save   / search   v reveal
 
 Database
-DB_USER                           backup_user
-DB_PASS                           ************
-DB_HOST                           localhost
+DB User              DB_USER │ backup_user
+DB Password          DB_PASS │ ************
+DB Host              DB_HOST │ localhost
 
 Logical
-BACKUP_LOGICAL_ENABLED            true
-BACKUP_LOGICAL_SCHEDULE           daily@02:00
+Logical Enabled     BACKUP_LOGICAL_ENABLED │ true
+Logical Schedule    BACKUP_LOGICAL_SCHEDULE │ daily@02:00
 
 Hint
 BACKUP_LOGICAL_SCHEDULE: When logical .sql.gz backups run...
@@ -471,7 +471,7 @@ BACKUP_LOGICAL_SCHEDULE: When logical .sql.gz backups run...
 Controls:
 - `/`: search by group, key, label, or value.
 - `Enter`: edit selected setting.
-- `Enter` while editing: apply draft value.
+- `Enter` while editing: apply draft value. Invalid values keep the editor open and show the validation rule.
 - `Esc`: cancel editing/search.
 - `j` / `k`, arrows: move selection.
 - `PageUp` / `PageDown`: scroll.
@@ -674,7 +674,7 @@ The TUI recalculates sizes on terminal resize:
 - Content panel uses the remaining width after subtracting the sidebar and layout borders.
 - Status, notifications, command palette, and confirm panel reserve vertical space.
 - Scrollable areas resize to the remaining main panel height and are clamped at zero when the terminal becomes too small.
-- Dashboard, Health, and Systemd render through viewports so their text cannot overflow the shell frame.
+- Dashboard, Health, Observability, and Systemd render through viewports so their text cannot overflow the shell frame.
 - Table selection uses 3, 2, or 1 columns depending on the available width.
 - History row count is capped by available panel height.
 - Config selection stays visible by adjusting viewport offset.

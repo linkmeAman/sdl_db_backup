@@ -372,6 +372,24 @@ func TestDashboardShowsLatestValidationSummary(t *testing.T) {
 	}
 }
 
+func TestDashboardPlacesQuickActionsBeforeLongStatusDetails(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	m.dashboardView.Height = 100
+	m.healthLoaded = true
+	m.health = backupapp.HealthReport{
+		Logical:  backupapp.HealthCheck{Status: "ok", Message: "ready"},
+		Physical: backupapp.HealthCheck{Status: "ok", Message: "ready"},
+		Metrics:  backupapp.HealthCheck{Status: "ok", Message: "ready"},
+	}
+
+	view := m.viewDashboard(100)
+	quickActions := strings.Index(view, "Quick Actions")
+	lastRun := strings.Index(view, "Last Completed Run")
+	if quickActions < 0 || lastRun < 0 || quickActions > lastRun {
+		t.Fatalf("expected quick actions before long status details, got:\n%s", view)
+	}
+}
+
 func TestConfigFieldsIncludeAPIAndSystemdSettings(t *testing.T) {
 	m := newModel(".env", zeroConfigForTUITest())
 	foundAPI := false
