@@ -228,6 +228,21 @@ func (m model) viewDashboard(width int) string {
 		)
 	}
 
+	// ── QUICK ACTIONS ──────────────────────────────────────────────────────
+	// Keep these first so the selected action is visible even in a short terminal.
+	lines = append(lines, title.Render("Quick Actions"))
+	actions := []string{
+		"2  Start manual backup workflow",
+		"3  Open schedule manager",
+		"4  Search and edit configuration",
+		"5  View execution logs",
+		"6  View run history & validate",
+		"7  Refresh health diagnostics",
+		"8  Open observability metrics",
+	}
+	lines = append(lines, optionList(actions, m.dashboardSelected)...)
+	lines = append(lines, muted.Render("Use j/k to choose an action, then press Enter."), "")
+
 	// ── LAST COMPLETED RUN ────────────────────────────────────────────────
 	lines = append(lines, title.Render("Last Completed Run"))
 	if !m.healthLoaded && m.healthErr == "" {
@@ -349,20 +364,6 @@ func (m model) viewDashboard(width int) string {
 	} else if m.healthErr == "" {
 		lines = append(lines, "  "+muted.Render("loading..."))
 	}
-
-	// ── QUICK ACTIONS ──────────────────────────────────────────────────────
-	lines = append(lines, "", title.Render("Quick Actions"))
-	actions := []string{
-		"2  Start manual backup workflow",
-		"3  Open schedule manager",
-		"4  Search and edit configuration",
-		"5  View execution logs",
-		"6  View run history & validate",
-		"7  Refresh health diagnostics",
-		"8  Open observability metrics",
-	}
-	lines = append(lines, optionList(actions, m.dashboardSelected)...)
-	lines = append(lines, "", muted.Render("r refresh   ? help   q quit"))
 
 	m.dashboardView.SetContent(strings.Join(lines, "\n"))
 	return m.dashboardView.View()
