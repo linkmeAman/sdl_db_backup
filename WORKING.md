@@ -1,204 +1,162 @@
-# MySQL Database Backup Tool - How It Works
+# SDL DB Backup Architecture and Operating Model
 
-## Purpose
-This is a comprehensive MySQL backup tool that automatically backs up all user databases, handles failures with retry logic, cleans up old backups, and optionally uploads them to S3.
+This document describes the current implementation. It complements the
+operator-focused [README](README.md) and recovery procedures in
+[RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md).
 
----
+## Architecture
 
-## Main Components
-
-### Configuration Structure
-The program loads configuration from environment variables (or a `.env` file):
-- **Database credentials**: `DB_USER`, `DB_PASS`, `DB_HOST`, `DB_PORT`
-- **Backup settings**: `BACKUP_DIR`, `BACKUP_LOG_DIR`, `BACKUP_RETENTION_DAYS` (how long to keep old backups)
-- **Timeouts**: Per-database timeout, discovery timeout, preflight checks
-- **Retry logic**: `BACKUP_RETRY_COUNT`, base delay, max delay
-- **S3 upload**: Optional URL or PHP script for uploading backups
-
----
-
-## Execution Flow
-
-### 1. Startup & Lock Acquisition
-```
-main() → run()
-  ├─ Load configuration from .env or environment
-  ├─ Initialize run logger (creates individual log file for this run)
-  ├─ Acquire lock file to prevent parallel executions
-  └─ If lock fails → exit (another backup already running)
+```text
+main.go ────────────────┐
+TUI ────────────────────┼──> internal/backupapp ──> MySQL / PostgreSQL
+REST API ───────────────┤             │
+health / validation CLI ┘             ├──> local artifacts, manifests, logs
+                                      ├──> S3 logical or physical backups
+                                      └──> Prometheus textfile metrics
 ```
 
-### 2. Preflight Checks (`validatePrerequisites`)
-- Verify `DB_USER` is configured
-- Check that backup and log directories are writable
-- Verify `mysql` and `mysqldump` binaries exist in PATH
-- Test MySQL connectivity with a simple `SELECT 1` query
+| Component | Responsibility |
+| --- | --- |
+| `main.go` | Non-interactive runner plus `inspect`, `decrypt`, and `physical-validate` commands. |
+| `internal/backupapp` | Shared configuration, scheduling, dumping, encryption, validation, S3, retention, metrics, health, and API logic. |
+| `cmd/sdl-db-backup-tui` / `internal/tui` | Bubble Tea operator console. |
+| `cmd/sdl-db-backup-api` | REST API server. |
+| `cmd/sdl-db-backup-health` | Read-only operator health report. |
+| `cmd/sdl-db-backup-validate` | Logical artifact validation and sandbox restore testing. |
 
-### 3. Database Discovery (`listDatabases`)
-- Queries MySQL to get all databases: `SHOW DATABASES`
-- Filters out system databases: `information_schema`, `performance_schema`, `mysql`, `sys`
-- Returns list of user databases to back up
+## Configuration resolution
 
-### 4. Max Execution Time Handling (`tryDisableMaxExecutionTime`)
-- Reads MySQL's `@@GLOBAL.max_execution_time` setting
-- If it's > 0, disables it (sets to 0) so large table dumps won't timeout
-- Saves the original value to restore later after backup completes
-- This prevents mysqldump from being killed mid-operation
+The effective configuration is built in this order:
 
-### 5. Database Backup Loop
-For each database found:
-```
-dumpWithRetry(database)
-  ├─ Precheck: Discover broken views via discoverBrokenViews()
-  │  └─ Queries information_schema.VIEWS to find views with invalid dependencies
-  │
-  ├─ Attempt dump (retry up to RetryCount times):
-  │  └─ dumpDatabase()
-  │     ├─ Creates gzip-compressed SQL file (.sql.gz)
-  │     ├─ Uses mysqldump with flags:
-  │     │  - --single-transaction (consistent backup)
-  │     │  - --routines, --triggers, --events (include DB objects)
-  │     │  - --force --ignore-error (skip broken views/definers)
-  │     │  - --ignore-table (excludes detected broken views)
-  │     └─ Streams output to gzip compressor, counts bytes
-  │
-  └─ On failure: Classify error and decide if retry is worth attempting
-```
+1. Read the requested environment file (`BACKUP_ENV_FILE` or `.env`).
+2. Apply a non-expired temporary override file.
+3. Apply explicit process environment variables.
 
-### 6. Error Classification & Retry Logic (`classifyFailure` & `shouldRetry`)
-Errors are categorized:
-- **No retry**: auth, permission, disk, view, definer, schema, config, binary errors
-- **Retry**: connection issues, timeouts, command errors, etc.
+Process variables take precedence over temporary overrides. Temporary
+overrides only affect managed settings and are stored in
+`<BACKUP_LOG_DIR>/backup-temporary-overrides.json`. They are suitable for
+testing a schedule or upload choice without editing `.env`.
 
-Retry delays use exponential backoff:
-- Start with `RetryBaseDelay` (default 2s)
-- Double each attempt
-- Cap at `RetryMaxDelay` (default 20s)
+## Logical backup method
 
-### 7. Cleanup Old Backups (`cleanupOldBackups`)
-- After backup completes, deletes backup folders older than `RetentionDays`
-- Parses folder names by timestamp format: `YYYY-MM-DD_HH-MM-SS`
-- Skips the current run folder
+1. The runner acquires a process-aware lock and initializes run logging.
+2. It evaluates the logical schedule and validates the requested prerequisites.
+3. It discovers granted non-system databases unless an explicit database scope
+   is configured. A configured table scope is validated against the live
+   schema before dumping.
+4. Dumps run concurrently up to `BACKUP_LOGICAL_PARALLEL`, each bounded by
+   `BACKUP_LOGICAL_TIMEOUT_PER_DB`.
+5. MySQL uses `mysqldump`; PostgreSQL uses `pg_dump`. The MySQL path includes
+   schema objects such as routines, triggers, and events while avoiding
+   tablespace requirements for least-privilege accounts.
+6. Each artifact is gzip-compressed. With `BACKUP_ENCRYPTION_KEY`, the output
+   is encrypted using a versioned, chunked AES-256-GCM stream and named
+   `.sql.gz.enc`.
+7. The run writes artifact and SQL-payload hashes, object results, optional
+   PITR coordinates, and optional verification metadata to `manifest.json`.
+8. Transient failures are retried with exponential backoff. Failures that are
+   clearly non-transient (for example credentials, permissions, or missing
+   binaries) are not retried.
 
-### 8. Run Record & Manifest
-- Collects results in `runRecord` struct (status, duration, success/failure counts, per-DB results)
-- Writes `manifest.json` to the run folder
-- Appends run summary to `backup-runs.jsonl` (JSON lines log file)
+An empty scope means all available logical databases. Any intentional object
+omission or table-scoped run is represented as a partial recovery set, not a
+full backup success.
 
-### 9. S3 Upload (`uploadBackupToS3`)
-Two methods:
-- **CLI mode**: Calls PHP script with folder path: `php script.php /path/to/backup`
-- **HTTP mode**: POSTs JSON request to configured URL with backup folder path
+## Physical backup method
 
----
+Physical backup is MySQL-only. When enabled and due, XtraBackup produces an
+`xbstream` stream and `xbcloud` sends it directly to S3. No local physical
+backup directory is kept. The implementation adapts xtrabackup and xbcloud
+parallelism to host load and lowers upload concurrency when it detects S3
+throttling.
 
-## Key Data Structures
+After the object is uploaded, its remote size is verified and
+`PHYSICAL_COMPLETED.json` is written last. The remote location is:
 
-```go
-databaseResult {
-  Name, Status, Attempts
-  Duration, OutputPath, SizeBytes
-  ErrorCategory, Error
-}
-
-runRecord {
-  RunID, Status, Duration
-  DatabasesTotal, DatabasesSucceeded, DatabasesFailed
-  Results[] databaseResult
-}
+```text
+s3://<BACKUP_S3_BUCKET>/<BACKUP_S3_PHYSICAL_PREFIX>/<run-id>/physical.xbstream
 ```
 
----
+## Remote-upload method
 
-## Output Files
-- **Backup folder**: `{BACKUP_DIR}/{TIMESTAMP}/`
-  - `database1.sql.gz`, `database2.sql.gz`, etc.
-  - `manifest.json` (summary of this run)
-- **Logs**: `{LOG_DIR}/{TIMESTAMP}.log` (detailed execution log)
-- **Run history**: `{LOG_DIR}/backup-runs.jsonl` (appended one line per run)
+Logical uploads are independently controlled by
+`BACKUP_LOGICAL_S3_UPLOAD_ENABLED`.
 
----
+| Mode | Method | Recovery-grade completion marker |
+| --- | --- | --- |
+| `direct` | Go signs S3 requests and performs resilient multipart uploads for large files. | Yes |
+| `auto` | Tries direct first, then configured legacy PHP/HTTP helpers. | Only when direct succeeds |
+| `php` | Calls the configured PHP upload script. | No |
+| `http` | Calls the configured HTTP upload endpoint. | No |
 
-## Exit Code
-- `0` = success or warning-only run, including skipped missing tables that do not stop the backup
-- `1` = partial or complete failure with at least one real database backup error
+With `BACKUP_REQUIRE_REMOTE_COMPLETION=true` (the default), a configured
+legacy-only method is rejected for recovery-grade runs. Direct uploads verify
+uploaded objects and write `COMPLETED.json` only after the full remote prefix
+is committed. Restore procedures must ignore prefixes without that marker.
 
----
+## Validation and recovery methods
 
-## Critical Features
-✅ **Atomic backups** via `--single-transaction`  
-✅ **Broken view detection** to prevent dump failures  
-✅ **Exponential backoff** retry strategy  
-✅ **Process-aware locking** (detects stale locks)  
-✅ **Comprehensive error classification** for smart retry decisions  
-✅ **Automatic retention cleanup**  
-✅ **Optional S3 integration**  
-✅ **Per-run logging** + centralized JSONL history
+### Logical validation
 
----
+`cmd/sdl-db-backup-validate --mode logical` opens the recorded artifacts,
+authenticates/decrypts encrypted files when needed, validates gzip and engine
+completion markers, and verifies persisted artifact and SQL hashes when
+present. Results are persisted to the run manifest and JSONL history.
 
-## Configuration Example
+### Sandbox restore test
 
-```env
-# Database
-DB_USER=backup_user
-DB_PASS=secure_password
-DB_HOST=127.0.0.1
-DB_PORT=3306
+`--mode restore` imports a selected logical run into a bounded temporary
+database on the configured restore target. The target must never be
+production. The test validates schema object counts and fingerprint; it also
+checks exact row counts or sampled row hashes when those features were enabled
+when the source backup was created.
 
-# Backup paths
-BACKUP_DIR=/srv/backup/mysql_backup
-BACKUP_LOG_DIR=/srv/backup/mysql_backup/logs
+### Physical validation
 
-# Retention & timeouts
-BACKUP_RETENTION_DAYS=5
-BACKUP_TIMEOUT_PER_DB=30m
-BACKUP_DISCOVERY_TIMEOUT=30s
-BACKUP_PREFLIGHT_TIMEOUT=15s
+`main.go physical-validate <run-id>` requires a completed physical stream and
+downloads, extracts, and runs `xtrabackup --prepare` in the configured work
+directory. It is non-destructive to a MySQL server, but it still needs an
+isolated host and sufficient temporary disk space.
 
-# Retry logic
-BACKUP_RETRY_COUNT=3
-BACKUP_RETRY_BASE_DELAY=2s
-BACKUP_RETRY_MAX_DELAY=20s
+### PITR metadata
 
-# S3 upload (optional)
-BACKUP_S3_UPLOAD_URL=https://your-server.com/upload
-BACKUP_S3_UPLOAD_TIMEOUT=2h
-```
+MySQL logical runs can record a pre-dump server observation plus a coordinate
+for each successful dump. Those coordinates are not a replacement for
+independent binary-log archiving or rehearsed replay. See
+[RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md) for the required operating
+controls.
 
----
+## Scheduling and lifecycle
 
-## Typical Backup Run Sequence
+Logical and physical schedules are independently evaluated from the last
+successful run state:
 
-1. **Lock acquired** → Check if another backup is running
-2. **Preflight checks** → Verify MySQL connectivity and binaries
-3. **Database discovery** → Get list of user databases
-4. **Max execution time disabled** → Prevent timeout on large dumps
-5. **For each database**:
-   - Discover broken views
-   - Dump with retry logic (up to 3 attempts with exponential backoff)
-   - Record success/failure
-6. **Cleanup** → Remove backups older than retention period
-7. **Lock released** → Allow next backup to run
-8. **S3 upload** (if configured) → Upload backup folder to S3
-9. **Record logged** → Append run summary to backup-runs.jsonl
+- `always`: due on every invocation.
+- `disabled`: never due.
+- `daily@HH:MM[,HH:MM]`: one or more local-time clock slots.
+- `weekly@day,HH:MM`: weekly local-time slot.
+- `interval@24h`: due after the duration since the last successful run.
 
----
+Missed daily and weekly slots are caught up at the next invocation. The systemd
+timer should run at least as frequently as the smallest scheduling interval.
 
-## Error Handling
+After each run, GFS cleanup selects daily, weekly, and monthly recovery points.
+The newest `BACKUP_RETENTION_MIN_VERIFIED` successful sandbox-restore-verified
+local runs remain protected even if normal GFS selection would remove them.
 
-The tool implements intelligent error classification:
+## Records and observability
 
-| Error Type | Retryable | Example |
-|-----------|-----------|---------|
-| Authentication | No | Access denied |
-| Permission | No | Permission denied |
-| Disk | No | No space left on device |
-| View | No | References invalid table (1356) |
-| Definer | No | User specified as definer (1449) |
-| Schema | No | Table doesn't exist (1146) |
-| Config | No | Unknown variable, max_allowed_packet |
-| Binary | No | Executable not found |
-| Connection | Yes | Connection refused, server has gone away |
-| Timeout | Yes | Deadline exceeded, timed out |
-| Command | Yes | Other command errors |
+Every run produces:
+
+| Record | Location | Contents |
+| --- | --- | --- |
+| Run log | `<BACKUP_LOG_DIR>/<run-id>.log` | Detailed log for one run. |
+| Daily log | `<BACKUP_LOG_DIR>/YYYY-MM-DD.log` | Aggregate day log. |
+| Run history | `<BACKUP_LOG_DIR>/backup-runs.jsonl` | Append-only structured run summaries. |
+| Manifest | `<BACKUP_DIR>/<run-id>/manifest.json` | Artifact inventory, hashes, results, and persisted validation. |
+| Schedule state | `<BACKUP_LOG_DIR>/backup-schedule-state.json` | Latest successful logical and physical schedule state. |
+| Metrics | `BACKUP_METRICS_FILE` | Prometheus textfile samples, including live run status. |
+
+See [GRAFANA_BACKUP_MONITORING.md](GRAFANA_BACKUP_MONITORING.md) for metric
+definitions and alert recommendations. For live log streaming, use the sample
+Promtail configuration in [loki/promtail-config.yml](loki/promtail-config.yml).

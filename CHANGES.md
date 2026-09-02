@@ -1,197 +1,69 @@
-# SDL DB Backup — Changes Log
+# SDL DB Backup Change Log
 
-## Current Architecture
+## Current implementation
 
-## Reliability hardening (unreleased)
+This repository is no longer a single-script MySQL dump utility. The current
+implementation uses a shared Go backup engine with non-interactive, terminal
+UI, REST API, health-check, and validation entrypoints.
 
-- replaced logical artifact encryption with versioned, authenticated AES-256-GCM streaming and strict key validation; added legacy-read compatibility plus encrypted validation, inspect, restore, and CLI decrypt support
-- direct S3 logical uploads now verify uploaded object size and write `COMPLETED.json` as the final remote commit marker; physical stream uploads verify their object and write `PHYSICAL_COMPLETED.json`
-- full backups now fail closed when objects would be omitted; intentional table-scoped or omission-based runs are recorded as partial rather than full success
-- added local retention protection for recent sandbox-restore-verified backups and atomic writes for manifests, schedule state, overrides, and run history
-- changed remote upload, physical backup, and root-runner defaults to explicit opt-in; root system-wide installation remains an explicit opt-in action
-- added MySQL PITR manifest metadata (per-dump source-data coordinates and a clearly labelled server observation), plus an operational binlog-replay runbook
-- added PostgreSQL-aware logical validation and sandbox restore verification
-- added resilient direct-S3 multipart uploads for large files, with retry, abort-on-failure, signed multipart queries, and final object verification
-- added a non-destructive `physical-validate <run-id>` drill that downloads, extracts, and prepares a completed physical stream without touching a MySQL server
+### Backup and recovery reliability
 
-The project no longer relies on one large `main.go` flow only.
+- Logical artifacts support authenticated, versioned AES-256-GCM streaming
+  encryption. Keys must be exactly 32 raw bytes or 64 hexadecimal characters;
+  legacy encrypted artifacts remain readable for migration.
+- Logical validation, inspection, decryption, and sandbox restore testing
+  understand encrypted `.sql.gz.enc` artifacts.
+- Logical run manifests record artifact SHA-256 and, when available, the
+  decompressed SQL payload SHA-256.
+- Direct S3 uploads verify remote objects and commit `COMPLETED.json` last.
+  Physical streams verify their object and commit `PHYSICAL_COMPLETED.json`
+  last.
+- Large direct S3 uploads use multipart transfer with transient-failure retry
+  and abort incomplete multipart uploads on failure.
+- Full recovery sets fail closed when objects would be omitted. Explicitly
+  table-scoped or omission-based work is recorded as partial.
+- Local GFS cleanup protects the configured number of recent
+  sandbox-restore-verified runs.
+- Manifests, run history, schedule state, and temporary overrides use atomic
+  writes to reduce interrupted-write corruption.
 
-- `main.go` and `main_sync_upload.go` are non-interactive entrypoints
-- `internal/backupapp/app.go` contains the shared backup engine and config logic
-- `internal/backupapp/httpapi.go` provides the built-in REST API
-- `internal/backupapp/platform.go` provides shared runtime/profile/systemd rendering helpers
-- `cmd/sdl-db-backup-tui/main.go` launches the Bubble Tea terminal UI
-- `internal/tui/app.go` contains the TUI model, screens, widgets, command palette, and async event handling
-- `cmd/sdl-db-backup-health/main.go` provides a health-check CLI
-- `cmd/sdl-db-backup-api/main.go` runs the REST API server
+### Database support and validation
 
-Recent operator-facing changes:
+- Logical backup and validation support both MySQL and PostgreSQL.
+- MySQL logical backups can capture optional PITR coordinates and server
+  observations. Binary-log retention and replay remain external operational
+  controls.
+- Sandbox restore verification checks schema object counts and fingerprints;
+  exact row totals and sampled row-content hashes can be enabled for stronger
+  verification.
+- Physical MySQL validation uses a non-destructive download, extraction, and
+  `xtrabackup --prepare` drill.
 
-- replaced the utility-style TUI with a Bubble Tea operator console for dashboard, config editing, manual runs, logs, history, health checks, and user-systemd control
-- added a built-in REST API for CRM/backend integration across backup runs, config, schedules, logs, storage, health, runtime, and user-level systemd actions
-- added portable config and runtime metadata so runs record OS user, execution source, hostname, and pid
-- added configurable user unit names plus rendered unit previews for host-specific systemd installation
-- removed repo-shipped assumptions about one fixed working directory, home directory, or PHP upload host path from the main portable setup flow
-- added command palette, searchable config editing, unsaved-change handling, toasts, and live run output
-- added a Schedule page for backup timing, upload toggles, retention days, and permanent or temporary schedule changes
-- added temporary overrides stored at `<BACKUP_LOG_DIR>/backup-temporary-overrides.json`, which are honored by scheduled service runs until expiry without rewriting `.env`
-- added logical backup scope controls for selected databases and selected tables, defaulting to all granted databases and all tables
-- improved the manual backup scope controls so `Esc` returns from table selection and `c`/`n`/right arrow visibly continue to preview
-- added bulk and range selection for TUI backup scope, plus a multi-column table picker for large databases
-- added table search in the TUI backup scope picker, with filtered bulk selection and extra back keys from table selection
-- added permanent save from the TUI scope picker so selected databases/tables can be written to `.env` for scheduled logical backups
-- added global TUI notifications so commands, confirmations, saves, errors, and state changes are visible on every page
-- improved TUI layout sizing so content, sidebars, notifications, command palette, and confirmations share terminal height without clipping
-- added a CLI health report command
-- added an API server command
-- added daily aggregate logs alongside per-run logs
-- added `backup-runs.jsonl` as a structured run index
-- changed logical dump generation so dump files do not start with `USE db_name;`
-- added `--no-tablespaces` to logical dumps for least-privilege MySQL backup users
-- **V2**: Added multi-database engine support (`DB_ENGINE=postgres`) with native `pg_dump` and `psql` integration
-- **V2**: Added AES-256-CFB stream encryption at rest via `BACKUP_ENCRYPTION_KEY`
-- **V2**: Replaced flat retention days with Grandfather-Father-Son (GFS) rotation (`BACKUP_RETENTION_DAILY`, `BACKUP_RETENTION_WEEKLY`, `BACKUP_RETENTION_MONTHLY`)
-- **V2**: Added `Ctrl+S` saving to the TUI Config Editor to safely overwrite `.env` with drafted changes
+### Operations and interfaces
 
-See `README.md` for the current commands, TUI controls, logging layout, and configuration flow.
+- Logical and physical schedules are independent, persist state, and catch up
+  missed fixed daily/weekly slots.
+- The runner protects against overlapping runs, writes daily plus per-run logs,
+  stores JSONL history, and emits Prometheus textfile metrics throughout a run.
+- Adaptive tuning reduces logical, xtrabackup, and xbcloud parallelism under
+  host load; physical upload retries lower concurrency when S3 throttles.
+- The Bubble Tea TUI supports manual runs, scope selection, config editing,
+  temporary overrides, health, metrics, log/history inspection, and
+  user-systemd control.
+- The REST API exposes configuration, effective configuration, runs, health,
+  schedules, systemd state/actions, logs, storage, runtime data, and restore
+  validation.
+- Remote upload, physical backup, and scheduled root execution are opt-in by
+  default.
 
-## Overview
+## Compatibility notes
 
-The original `main.go` performs MySQL dumps to `/srv/backup/mysql_backup/`.
-All changes below were made in `main_test.go` (working copy) and synced to `main_sync_upload.go` for execution, leaving `main.go` untouched.
-
----
-
-## 1. S3 Upload After Backup (main_test.go)
-
-**Goal:** After all MySQL dumps complete, synchronously upload the backup folder to S3 bucket `example-backups` under prefix `db_backup/`.
-
-### Config additions (`config` struct + `loadConfig()`)
-
-| Env var | Default | Purpose |
-|---|---|---|
-| `BACKUP_S3_UPLOAD_SCRIPT` | _(empty)_ | Absolute path to `upload_backup.php`. When set, CLI upload is used (**preferred**). |
-| `BACKUP_S3_PHP_BIN` | `/usr/bin/php` | PHP binary for CLI upload. |
-| `BACKUP_S3_UPLOAD_URL` | _(empty)_ | HTTP endpoint fallback (`upload-route.php`). Only used if `BACKUP_S3_UPLOAD_SCRIPT` is not set. |
-| `BACKUP_S3_UPLOAD_TIMEOUT` | `2h` | Context timeout for the upload step. |
-
-### New functions
-
-**`uploadBackupToS3(cfg, runFolder)`**
-Dispatcher. Prefers CLI upload if `S3UploadScript` is set; falls back to HTTP; logs a skip message if neither is configured.
-
-**`uploadBackupViaCLI(cfg, runFolder)`**
-Runs `php upload_backup.php <runFolder>` as a subprocess with a context timeout.
-- Streams PHP's STDERR (progress lines) directly to the Go logger in real time.
-- Parses the JSON summary from PHP's STDOUT and logs the result.
-- Bypasses nginx/PHP-FPM — **no web-server connection timeout**.
-
-**`uploadBackupViaHTTP(cfg, runFolder)`**
-Posts `{"action":"uploadBackupFolder","backupPath":"<runFolder>"}` to `BACKUP_S3_UPLOAD_URL`.
-Falls back from the original EOF-prone approach; kept as a secondary option.
-
-**`logS3Result(result)`**
-Shared helper that logs success/partial/failure from either upload path.
-
-### `run()` return type change
-
-`run()` now returns `(int, string)` — exit code **and** the run folder path — so `main()` can pass the folder to the upload step without re-reading config or state.
-
-### `main()` flow
-
-```
-1. run()  →  MySQL dumps complete, returns (exitCode, runFolder)
-2. uploadBackupToS3()  →  synchronous S3 upload
-3. os.Exit(exitCode)
-```
-The upload runs regardless of whether the backup was `success` or `partial`, so even a partially completed backup set is pushed to S3.
-
----
-
-## 2. MySQL max_execution_time Fix (main_test.go)
-
-**Problem:** The MySQL server had `@@GLOBAL.max_execution_time = 30000` (30 seconds). Every `SELECT` during `mysqldump` of large tables (`notify_status`, `email_ready`) was killed with Error 3024, causing all retries to fail.
-
-**Fix: `tryDisableMaxExecutionTime(cfg)`**
-
-Called once in `run()` immediately after `validatePrerequisites()` and before any dump starts.
-
-1. Reads the current `@@GLOBAL.max_execution_time`.
-2. If it is already `0`, returns a no-op.
-3. Otherwise runs `SET GLOBAL max_execution_time=0` (requires `SYSTEM_VARIABLES_ADMIN` privilege — the `backup` user has this).
-4. Returns a **restore function** that is `defer`-ed; it sets the value back to the original after all dumps finish.
-
-If the user lacks the privilege, a warning is logged and the backup continues (dumps may still fail on large tables).
-
----
-
-## 3. New PHP CLI Script (upload_backup.php)
-
-**File:** `/var/www/backup-admin/routes/upload_backup.php`
-
-**Purpose:** A CLI-only PHP script called by the Go backup tool as a subprocess. Replaces the HTTP call to `upload-route.php?action=uploadBackupFolder` which was killed by nginx/PHP-FPM timeout on large uploads.
-
-**Key behaviours:**
-
-- Enforces `php_sapi_name() === 'cli'` — refuses web requests.
-- Path traversal check: `backupPath` must be under `/srv/backup/mysql_backup`.
-- Loads AWS credentials from `/etc/sdl-db-backup/aws-backup-config.php` (separate from the main app credentials).
-- Uploads each file with `MultipartUploader` (10 MB parts).
-- Writes per-file progress to **STDERR** (Go streams this to the log in real time).
-- Writes a JSON summary to **STDOUT** (Go parses this for the final log line).
-- Exits `0` on full success, `1` on any failure.
-
-**AWS config used:** `/etc/sdl-db-backup/aws-backup-config.php`
-```
-bucket: example-backups
-folder: db_backup
-region: us-east-1
-```
-
----
-
-## 4. upload-route.php — uploadBackupFolder updates
-
-**File:** `/var/www/backup-admin/routes/upload-route.php`
-
-Changes to the existing `uploadBackupFolder` action:
-
-- Now loads `/etc/sdl-db-backup/aws-backup-config.php` and creates a dedicated `$backupS3Client` with backup-specific credentials (previously used the app's S3 credentials and a hardcoded bucket name `example-backups`).
-- Bucket and prefix (`db_backup/`) now come from `$backupConfig` instead of being hardcoded.
-- **Bug fix:** `$e->getState()->getUploadId()` does not exist in the AWS SDK v3. Replaced with `$e->getState()->getId()['UploadId']`.
-
----
-
-## 5. How to run
-
-```bash
-cd /opt/sdl-db-backup
-
-# go run cannot run *_test.go files directly — use the synced copy:
-cp -f main_test.go main_sync_upload.go
-go run main_sync_upload.go
-```
-
-**Or build a binary:**
-```bash
-go build -o sdl_db_backup_sync main_sync_upload.go
-./sdl_db_backup_sync
-```
-
-Logs are written to `/srv/backup/mysql_backup/logs/<run-id>.log` and also to stdout.
-A `manifest.json` is written inside each backup folder on completion.
-A JSONL run log is appended to `/srv/backup/mysql_backup/logs/backup-runs.jsonl`.
-
----
-
-## 6. Files changed / created
-
-| File | Status | Notes |
-|---|---|---|
-| `main_test.go` | Modified | Working copy with all changes |
-| `main_sync_upload.go` | Created (copy) | Runnable copy (`go run` rejects `*_test.go`) |
-| `.env` | Modified | Added `BACKUP_S3_*` variables |
-| `.env.example` | Modified | Same new variables with empty defaults |
-| `main.go` | **Untouched** | Original backup binary — not modified |
-| `routes/upload-route.php` | Modified | `uploadBackupFolder` uses backup-specific S3 config; `getUploadId()` bug fixed |
-| `routes/upload_backup.php` | **Created** | New CLI-only PHP S3 upload script |
+- The supported runner is `main.go`; `main_sync_upload.go` is not part of the
+  current repository and should not be used in commands or automation.
+- Physical backup remains MySQL-only and is direct-to-S3 only.
+- PHP and HTTP logical upload helpers remain available for compatibility, but
+  they do not provide the direct-upload completion protocol. Keep
+  `BACKUP_REQUIRE_REMOTE_COMPLETION=true` for recovery-grade backups.
+- Successful backup execution alone is not a recovery guarantee. Follow
+  [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md) for recurring drills, PITR
+  binlog archival, S3 durability controls, and release gates.

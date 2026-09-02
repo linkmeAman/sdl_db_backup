@@ -1,788 +1,357 @@
 # SDL DB Backup
 
-Creates MySQL backups with separate logical and physical backup controls.
+SDL DB Backup is a Go-based backup service for MySQL and PostgreSQL. It creates
+logical backups, can stream MySQL physical backups to S3, and provides a
+terminal UI, REST API, health checks, validation tools, and Prometheus metrics.
 
-## Overview
+## Contents
 
-This project is a portable backup application for MySQL with three main operator surfaces:
+- [What it does](#what-it-does)
+- [Quick start](#quick-start)
+- [How backups are made](#how-backups-are-made)
+- [Configuration](#configuration)
+- [Run, validate, and restore](#run-validate-and-restore)
+- [Scheduling and operations](#scheduling-and-operations)
+- [Interfaces and observability](#interfaces-and-observability)
+- [Documentation map](#documentation-map)
 
-- `main.go` and `main_sync_upload.go` are thin non-interactive runners
-- `cmd/sdl-db-backup-tui/main.go` provides the terminal UI for interactive management
-- `cmd/sdl-db-backup-api/main.go` provides the REST API for CRM/backend integration
+## What it does
 
-Core behavior:
-- Supports both `mysql` and `postgres` database engines.
-- Logical backups and physical backups can be enabled, scheduled, timed out, and uploaded independently through `.env`.
-- Logical backups create `.sql.gz` files per database (with authenticated AES-256-GCM `.enc` encryption if configured) and can upload that run folder to S3 via direct, PHP, or HTTP upload modes.
-- Physical backups stream `xtrabackup` directly to S3 as `physical.xbstream` and do not create a local physical backup directory.
-- Retries each logical database dump up to the configured retry count.
-- Deletes backup folders using a Grandfather-Father-Son (GFS) rotation strategy to keep daily, weekly, and monthly snapshots.
-- Writes both a per-run log (`<run_id>.log`) and a daily aggregate log (`YYYY-MM-DD.log`) in `BACKUP_LOG_DIR`.
-- Records structured run history in `backup-runs.jsonl`.
+### Logical backups
 
-If you need implementation history or change tracking, see `CHANGES.md`.
-For recovery drills and required cloud durability controls, see [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md).
-For Prometheus/Grafana monitoring details, full metric definitions, ready-to-paste PromQL selectors, dashboard layout guidance, and alert examples, see [GRAFANA_BACKUP_MONITORING.md](/opt/sdl-db-backup/GRAFANA_BACKUP_MONITORING.md).
+- Supports `DB_ENGINE=mysql` and `DB_ENGINE=postgres`.
+- Discovers non-system databases available to the backup user, or limits work
+  to `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES`.
+- Produces one compressed SQL artifact per logical database. When encryption is
+  enabled, the artifact is written as `.sql.gz.enc` using authenticated,
+  versioned AES-256-GCM streaming encryption.
+- Records an artifact SHA-256 and, when available, the decompressed SQL
+  payload SHA-256 in the run manifest.
+- Retries transient dump failures with exponential backoff and writes a
+  structured result for every database.
+- Supports optional MySQL PITR metadata, exact row-count checks, and sampled
+  row-content hashes for deeper restore verification.
 
-## Files
+### Physical backups
 
-- `main.go`: non-interactive backup runner entrypoint
-- `main_sync_upload.go`: alternate non-interactive entrypoint for manual `go run`
-- `internal/backupapp/app.go`: shared backup engine, config handling, and systemd helpers
-- `internal/backupapp/httpapi.go`: built-in REST API routes
-- `internal/backupapp/platform.go`: runtime profile, rendered systemd units, and shared read helpers
-- `cmd/sdl-db-backup-tui/main.go`: Bubble Tea terminal UI launcher
-- `internal/tui/app.go`: TUI orchestration, state, and input routing
-- `internal/tui/views.go`: page rendering, panels, and viewport-backed content views
-- `internal/tui/input.go`: keyboard handling and focus routing
-- `internal/tui/cmds.go`: async command helpers and loaders
-- `internal/tui/helpers.go`: backup/schedule/systemd helpers and shared TUI utilities
-- `cmd/sdl-db-backup-health/main.go`: CLI health check for latest run, daily log path, and prerequisites
-- `cmd/sdl-db-backup-validate/main.go`: CLI logical validation and sandbox restore-test runner for previous backups
-- `cmd/sdl-db-backup-api/main.go`: REST API server
-- `mysql_full_backup.sh`: bash backup script
-- `.env.example`: environment template
-- `sdl-db-backup.service`: portable unit template
-- `sdl-db-backup.timer`: portable timer template
-- `dashboards/sdl-db-backup-observability.json`: importable Grafana dashboard template for backup observability
-- `dashboards/sdl-db-backup-logs.json`: importable Grafana logs dashboard for live backup log streaming through Loki
-- `prometheus/sdl-db-backup-alerts.yml`: importable Prometheus alert rules for backup failures, stale success, stuck runs, and observability issues
-- `observability/README.md`: one-page bundle index for the dashboard, alert rules, and metric guide
-- `loki/promtail-config.yml`: sample Promtail config for shipping per-run backup logs to Loki
-- `loki/README.md`: Loki and Promtail notes for Grafana log streaming
-- `openapi.json`: machine-readable API route inventory
+- Supports MySQL physical backups through Percona XtraBackup and streams the
+  result directly to S3 with `xbcloud`; physical backups are not table scoped.
+- Verifies the remote object before writing `PHYSICAL_COMPLETED.json` as the
+  final remote completion marker.
+- Includes a prepare-only validation command that downloads, extracts, and
+  prepares a completed stream without changing a MySQL server.
 
-## Setup (No Root)
+### Reliability controls
 
-The easiest way to install and configure SDL DB Backup is by using the automated one-command installer. 
+- Uses a process-aware lock to prevent overlapping runs.
+- Evaluates logical and physical schedules independently and persists state in
+  `backup-schedule-state.json`.
+- Keeps local backups with Grandfather-Father-Son (GFS) retention and protects
+  recent sandbox-restore-verified runs.
+- Writes manifests, schedule state, temporary overrides, and run history
+  atomically.
+- Uses direct S3 uploads by default. Direct uploads verify objects and write
+  `COMPLETED.json` last; recovery tooling should accept only completed prefixes.
+- Emits Prometheus textfile metrics and keeps per-run, daily, and JSONL history
+  logs.
 
-This installer will automatically verify system dependencies, bootstrap the Go toolchain if missing, compile the Go binaries, install them to your local `~/.local/bin` path, set up your configuration folder at `~/.config/sdl-db-backup`, generate a secure AES encryption key, and configure the background systemd service and timer.
+## Quick start
 
 ### Prerequisites
 
-Ensure your host server has a MySQL client installed for database dumps:
-- **Debian / Ubuntu**: `sudo apt update && sudo apt install -y mysql-client`
-- **RHEL / CentOS / Fedora**: `sudo dnf install -y mariadb`
+- Go 1.24.2 or newer to build from source.
+- For MySQL logical backups: `mysql` and `mysqldump`.
+- For PostgreSQL logical backups: `pg_dump`; `psql` is also required for
+  sandbox restore testing.
+- For MySQL physical backups and physical validation: `xtrabackup`, `xbcloud`,
+  and `xbstream`.
 
-### Quick Installation
+Install the MySQL client on Debian/Ubuntu with:
 
 ```bash
-git clone https://github.com/linkmeAman/sdl_db_backup.git
-cd sdl_db_backup
-chmod +x install.sh
+sudo apt update
+sudo apt install -y mysql-client
+```
+
+Or bootstrap the local Go toolchain and check available host tools:
+
+```bash
+./scripts/install-tools.sh
+```
+
+### Configure a local run
+
+```bash
+cp .env.example .env
+```
+
+At minimum, set `DB_USER` and `DB_PASS`. Set the logical schedule to `always`
+for a one-off test, and leave remote upload disabled until S3 settings are
+ready:
+
+```env
+DB_ENGINE=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=backup_logical
+DB_PASS=replace-me
+BACKUP_LOGICAL_SCHEDULE=always
+BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false
+BACKUP_PHYSICAL_ENABLED=false
+```
+
+Run a preflight first. It verifies connectivity, paths, metrics output, and
+configured upload prerequisites without creating artifacts:
+
+```bash
+go run ./cmd/sdl-db-backup-tui
+```
+
+Choose **Backup**, enable **Preflight Only**, and run it. To perform a
+non-interactive backup afterward:
+
+```bash
+go run ./main.go
+```
+
+### Install as a service
+
+The installer builds the runner, TUI, health-check, and API binaries; creates
+an environment file; and installs a systemd timer. A non-root invocation uses
+user-scoped locations (`~/.local/bin`, `~/.config/sdl-db-backup`, and
+`~/.config/systemd/user`). Running the installer as root is an explicit
+system-wide installation and enables root-runner support in that installation's
+configuration.
+
+```bash
 ./install.sh
 ```
 
-**After Installation**: The installer will alert you to manually configure your sensitive credentials. Run the TUI to edit them seamlessly:
-```bash
-sdl-db-backup-tui
-```
-Then press `4` to enter the Config Editor and update `DB_USER`, `DB_PASS`, and S3 secrets (`BACKUP_S3_KEY_ID`, `BACKUP_S3_KEY_SECRET`, `BACKUP_S3_BUCKET_NAME`).
+After installation, update the generated `.env` before enabling remote or
+physical backups. Launch the TUI with `sdl-db-backup-tui` to edit managed
+settings safely.
 
-### Manual Setup
+## How backups are made
 
-If you prefer to set up the system manually without the automated installer:
+The runner uses the following sequence for each invocation:
 
-1. Install required host tools:
-   - `./scripts/install-tools.sh`
-   - Optional: `./scripts/install-shortcuts.sh`
+1. Load `.env`, then apply active temporary overrides, then explicit process
+   environment variables. Explicit process variables have highest precedence.
+2. Acquire the run lock, create the per-run and daily log streams, and refresh
+   in-progress metrics.
+3. Evaluate the logical and physical schedules separately. `always` runs on
+   every invocation; `disabled` skips; `daily`, `weekly`, and `interval` are
+   evaluated from persisted successful-run state.
+4. Run preflight checks for the selected work: credentials, client binaries,
+   database connectivity, writable backup/log/metrics paths, and upload
+   configuration.
+5. Create logical dumps concurrently up to `BACKUP_LOGICAL_PARALLEL`. The
+   runner applies bounded retries and records successful, skipped, and failed
+   objects in `manifest.json` and `backup-runs.jsonl`.
+6. If enabled and due, stream the MySQL physical backup directly to S3.
+7. Upload logical artifacts when enabled. Direct uploads use multipart transfer
+   for large objects, retry transient failures, verify objects with S3, and
+   commit `COMPLETED.json` last.
+8. Apply GFS cleanup, retain configured verified recovery points, finalize the
+   run outcome, and publish final metrics.
 
-2. Create environment file:
-   - `cp .env.example .env`
-   - Set database credentials, logical/physical schedules, and S3 settings
+The complete operational explanation and artifact layout are in
+[WORKING.md](WORKING.md). The current implementation changes are tracked in
+[CHANGES.md](CHANGES.md).
 
-3. For Go testing (logs progress in terminal):
-   - `./scripts/run-main`
-   - TUI: `./scripts/tui`
-   - Health: `go run ./cmd/sdl-db-backup-health`
-   - Validation: `go run ./cmd/sdl-db-backup-validate --mode logical`
-   - API: `go run ./cmd/sdl-db-backup-api`
+## Configuration
 
-4. Ensure `go` is available to the service user:
-   - `which go`
-   - If you are using the repo-local Go install, run `source ./scripts/env.sh` before invoking any `go run` command directly.
-   - If you installed the shortcuts, you can run `sdl-db-backup-tui` and `sdl-db-backup-run` from anywhere after `~/.local/bin` is on your `PATH`.
+Start from [.env.example](.env.example). Secrets must stay out of source
+control. The groups below cover the settings operators normally change.
 
-5. Render or copy user units:
-   - `mkdir -p ~/.config/systemd/user`
-   - Use the TUI `Systemd` page or API `GET /api/v1/systemd` response to render host-specific unit content
-   - If copying the template files directly, replace `{{WORKING_DIRECTORY}}`, `{{ENV_FILE}}`, and `{{SERVICE_UNIT_NAME}}` first
+### Database and storage
 
-6. Reload and enable timer:
-   - `systemctl --user daemon-reload`
-   - `systemctl --user enable --now <your BACKUP_SYSTEMD_TIMER_NAME>`
+| Setting | Purpose |
+| --- | --- |
+| `DB_ENGINE` | `mysql` (default) or `postgres`. Physical backup is MySQL-only. |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS` | Logical database connection. PostgreSQL defaults to port `5432`; MySQL defaults to `3306`. |
+| `BACKUP_DIR`, `BACKUP_LOG_DIR` | Local artifact and log locations. |
+| `BACKUP_ENCRYPTION_KEY` | Optional exact 32-byte raw key or 64-character hexadecimal key for AES-256-GCM encryption. Store it separately from backups. |
+| `BACKUP_ALLOW_ROOT_RUNNER` | Allows a scheduled runner to run as root. Defaults to `false`. |
 
-7. Verify:
-   - `systemctl --user list-timers | grep sdl-db-backup`
-   - `systemctl --user status <your BACKUP_SYSTEMD_TIMER_NAME>`
-   - `journalctl --user -u <your BACKUP_SYSTEMD_SERVICE_NAME> -n 100 --no-pager`
+### Logical backups
 
-## Environment Settings
+| Setting | Purpose |
+| --- | --- |
+| `BACKUP_LOGICAL_ENABLED` | Enables logical work. |
+| `BACKUP_LOGICAL_SCHEDULE` | `always`, `disabled`, `daily@HH:MM[,HH:MM]`, `weekly@day,HH:MM`, or `interval@24h`. |
+| `BACKUP_LOGICAL_DATABASES` | Comma-separated database allow-list. Empty means all granted non-system databases. |
+| `BACKUP_LOGICAL_TABLES` | Optional table scope, for example `db1:users,orders;db2:audit_log`. |
+| `BACKUP_LOGICAL_TIMEOUT_PER_DB` | Per-database dump timeout. |
+| `BACKUP_LOGICAL_PARALLEL` | Maximum concurrent database dumps. Start at `1`–`2`. |
+| `BACKUP_LOGICAL_GZIP_LEVEL` | Compression level: `1` fastest, `9` smallest, `0` uncompressed stream. |
+| `BACKUP_ALLOW_OBJECT_OMISSIONS` | Allows intentional omissions. Defaults to `false`; scoped/omission-based output is recorded as partial rather than full success. |
+| `BACKUP_MYSQL_PITR_METADATA_ENABLED` | Adds MySQL dump coordinates and server observation metadata. Requires independently retained binlogs. |
+| `BACKUP_EXACT_ROW_COUNTS` | Captures exact source row counts for stronger but slower sandbox verification. |
+| `BACKUP_SAMPLE_DATA_CHECKS` | Captures deterministic hashes over a bounded primary-key row sample. |
 
-Logical backup settings:
-- `BACKUP_LOGICAL_ENABLED=true|false`
-- `BACKUP_LOGICAL_SCHEDULE=always|disabled|daily@07:30|daily@00:00,06:00,12:00,18:00|weekly@sun,07:30|interval@24h`
-- `BACKUP_LOGICAL_DATABASES=db1,db2` or empty for all granted non-system databases
-- `BACKUP_LOGICAL_TABLES=db1:table_a,table_b;db2:table_c` or empty for all validated tables/views
-- `BACKUP_LOGICAL_TIMEOUT_PER_DB=30m`
-- `BACKUP_LOGICAL_PARALLEL=2` controls how many logical databases are dumped concurrently
-- `BACKUP_LOGICAL_GZIP_LEVEL=1` controls gzip speed vs size for logical `.sql.gz` files (`1` fastest, `9` smallest, `0` no compression)
-- `BACKUP_LOGICAL_S3_UPLOAD_ENABLED=true|false`
-- `BACKUP_REQUIRE_REMOTE_COMPLETION=true|false` requires the direct S3 completion manifest and prevents legacy PHP/HTTP upload modes from being treated as recovery-grade remote copies
-- `DB_ENGINE=mysql|postgres`
-- `DB_USER` and `DB_PASS` are used for logical backups (`mysql` / `mysqldump` or `pg_dump`) and should point to a dedicated backup-only user
-- `RESTORE_TEST_ENABLED=true` enables destructive sandbox restore verification against the separately configured `RESTORE_TEST_HOST`, `RESTORE_TEST_PORT`, `RESTORE_TEST_USER`, and `RESTORE_TEST_PASS`; PostgreSQL defaults are port `5432` and user `postgres` (MySQL defaults remain `3306` and `root`)
-- PostgreSQL logical validation requires the `pg_dump` completion marker, and PostgreSQL sandbox restore validation requires `psql` on the backup host; it creates a bounded temporary database, imports with `ON_ERROR_STOP=1`, and verifies the restored public-schema objects and configured data checks
-- `BACKUP_ENCRYPTION_KEY=...` (optional 32-byte raw key or 64-character hexadecimal key to enable authenticated AES-256-GCM stream encryption)
-- `BACKUP_MYSQL_PITR_METADATA_ENABLED=true|false` adds a commented `--source-data=2` binlog coordinate to each MySQL dump and records the pre-dump server GTID/binlog state in `manifest.json`
-- `BACKUP_MYSQL_PITR_METADATA_REQUIRED=true|false` fails logical backup runs when the server observation or any dump coordinate cannot be captured; it implies `..._ENABLED=true`
+### S3 uploads
 
-For MySQL PITR, retain binary logs independently and rehearse their replay. The
-pre-dump server observation is not a single snapshot for parallel dump
-sessions; each successful MySQL result's `mysql_pitr_coordinate` is the
-coordinate associated with that artifact. The backup user typically needs
-`REPLICATION CLIENT` and the privileges required by `mysqldump --source-data`
-(often `RELOAD` or `FLUSH_TABLES`, depending on MySQL version/configuration).
+| Setting | Purpose |
+| --- | --- |
+| `BACKUP_LOGICAL_S3_UPLOAD_ENABLED` | Enables logical remote upload. Defaults to `false`. |
+| `BACKUP_S3_UPLOAD_MODE` | `direct`, `auto`, `php`, or `http`. Use `direct` for recovery-grade uploads. |
+| `BACKUP_REQUIRE_REMOTE_COMPLETION` | Requires a direct remote completion marker. Defaults to `true`; legacy PHP/HTTP modes are not recovery-grade with this enabled. |
+| `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION` | Destination bucket and region. |
+| `BACKUP_S3_KEY_ID`, `BACKUP_S3_KEY_SECRET` | S3 credentials (the standard AWS variable aliases are also accepted). |
+| `BACKUP_S3_LOGICAL_PREFIX` | Prefix for logical run folders. |
+| `BACKUP_S3_UPLOAD_SCRIPT`, `BACKUP_S3_UPLOAD_URL` | Required only by `php` or `http` upload modes. |
 
-Physical backup settings:
-- `BACKUP_PHYSICAL_ENABLED=true|false`
-- `BACKUP_PHYSICAL_SCHEDULE=always|disabled|daily@14:00|daily@00:00,06:00,12:00,18:00|weekly@sun,14:00|interval@168h`
-- `BACKUP_PHYSICAL_TIMEOUT=6h`
-- `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=true|false`
-- `BACKUP_XTRABACKUP_USER` and `BACKUP_XTRABACKUP_PASS` are the MySQL credentials used only by physical backup
-- `BACKUP_XTRABACKUP_RUN_AS_USER` is the Linux user used to execute `xtrabackup`, usually `mysql`
-- `BACKUP_XTRABACKUP_WORK_DIR=/srv/backup/xtrabackup-tmp`
+Logical remote recovery requires:
 
-Run `sdl-db-backup physical-validate <run-id>` from a dedicated verification
-host to download, extract, and prepare a completed physical stream without
-modifying a MySQL server. See `RECOVERY_OPERATIONS.md` for its prerequisites
-and scheduling requirements.
-
-Shared S3 settings:
-- `BACKUP_S3_BUCKET=...`
-- `BACKUP_S3_REGION=...`
-- `BACKUP_S3_LOGICAL_PREFIX=logical`
-- `BACKUP_S3_PHYSICAL_PREFIX=physical`
-- `BACKUP_S3_KEY_ID=...`
-- `BACKUP_S3_KEY_SECRET=...`
-- `BACKUP_METRICS_FILE=/var/lib/node_exporter/textfile_collector/sdl_db_backup.prom`
-
-Logical S3 upload settings:
-- `BACKUP_S3_UPLOAD_MODE=direct|auto|php|http`
-- `BACKUP_S3_UPLOAD_SCRIPT=/path/to/upload_backup.php`
-- `BACKUP_S3_UPLOAD_URL=https://...`
-- `BACKUP_S3_UPLOAD_TIMEOUT=2h`
-
-Direct uploads use multipart S3 transfer for artifacts of 64 MiB or larger.
-Each part is hashed and retried for transient failures; the completed object is
-still checked with `HEAD` before the run receives its remote completion marker.
-
-API settings:
-- `BACKUP_API_ENABLED=true|false`
-- `BACKUP_API_LISTEN_ADDR=127.0.0.1:8086`
-- `BACKUP_API_BASE_PATH=/api/v1`
-- `BACKUP_API_AUTH_ENABLED=true|false`
-- `BACKUP_API_BEARER_TOKEN=...`
-- `BACKUP_SYSTEMD_SERVICE_NAME=sdl-db-backup.service`
-- `BACKUP_SYSTEMD_TIMER_NAME=sdl-db-backup.timer`
-- `BACKUP_EXECUTION_SOURCE=runner|tui|api|...`
-
-Notes:
-- Logical backup upload and physical backup upload are separate. Logical upload is controlled by `BACKUP_LOGICAL_S3_UPLOAD_ENABLED`. Physical upload is controlled by `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`.
-- After each run, the runner writes Prometheus textfile metrics to `BACKUP_METRICS_FILE` or `/var/lib/node_exporter/textfile_collector/sdl_db_backup.prom` by default for Node Exporter textfile collection.
-- The default Prometheus label set is `job="sdl_db_backup", service="mysql", env="pilot"`. Override with `BACKUP_METRICS_JOB`, `BACKUP_METRICS_SERVICE`, `BACKUP_METRICS_ENV`, and optionally `BACKUP_METRICS_REGION`.
-- If the metrics are scraped through Node Exporter textfile collector, Prometheus will expose the sample label as `exported_job` instead of `job` because `job` is reserved for the scrape target. Use `exported_job="sdl_db_backup"` in Grafana and alert queries in that setup.
-- While a backup is running, the same metrics file is refreshed periodically so Prometheus/Grafana can show live run state via `backup_run_in_progress`, `backup_current_run_start_timestamp`, `backup_current_run_duration_seconds`, and `backup_metrics_last_update_timestamp`.
-- The `.prom` file contains metrics only, not runtime log lines. If you want the actual backup logs in Grafana, ship `BACKUP_LOG_DIR/*_*.log` to Loki with `loki/promtail-config.yml` and import `dashboards/sdl-db-backup-logs.json`.
-- For a copy/paste setup, see `loki/README.md` for the exact Promtail, Grafana provisioning, and log-permission commands.
-- The metrics file also separates logical and physical outcome via `backup_logical_last_attempted`, `backup_logical_last_status`, `backup_physical_last_attempted`, and `backup_physical_last_status` so Grafana can distinguish a logical success from a physical failure.
-- Additional Grafana-facing metrics include `backup_metrics_write_success`, `backup_cleanup_success`, `backup_last_cleanup_timestamp`, `backup_logical_last_total_databases`, `backup_logical_last_succeeded_databases`, `backup_logical_last_failed_databases`, and `backup_physical_last_duration_seconds`.
-- Adaptive tuning and retry metrics include `backup_adaptive_load_per_cpu`, `backup_adaptive_logical_parallel`, `backup_adaptive_xtrabackup_parallel`, `backup_adaptive_xbcloud_parallel`, `backup_physical_retry_count`, and `backup_physical_rate_limit_retry_count`.
-- [GRAFANA_BACKUP_MONITORING.md](./GRAFANA_BACKUP_MONITORING.md) includes dashboard queries plus copy-pasteable Prometheus alert rules for overall failure, logical failure, physical failure, upload failure, metrics-write failure, cleanup failure, validation failure, stuck runs, and stale-success detection.
-- Logical backup performance is tuned for speed by default with `BACKUP_LOGICAL_PARALLEL=2` and `BACKUP_LOGICAL_GZIP_LEVEL=1`. Increase parallelism carefully if the database host has spare CPU and I/O.
-- The runner now adapts logical and physical parallelism to current host load. Under higher load it reduces pressure automatically; on quieter multi-core hosts it can use a little more concurrency than the static baseline for faster completion.
-- Physical S3 streaming can now be capped explicitly with `BACKUP_XBCLOUD_PARALLEL` and `BACKUP_XBCLOUD_FIFO_STREAMS`, and throttled retries reduce `xbcloud` upload concurrency automatically.
-- `BACKUP_EXACT_ROW_COUNTS=true` enables slower but stronger logical backup manifests by running exact `COUNT(*)` across every base table and storing both per-table and total row counts. When present, sandbox restore validation will enforce exact restored row totals in addition to schema checks.
-- `BACKUP_SAMPLE_DATA_CHECKS=true` enables bounded content verification by hashing the first `BACKUP_SAMPLE_DATA_ROWS` rows of each base table that has a primary key, ordered by that key. This is cheaper than a full data diff and gives stronger restore confidence for representative content.
-- `BACKUP_S3_UPLOAD_MODE=direct` uploads logical backup files from Go directly to S3 using `BACKUP_S3_KEY_ID` and `BACKUP_S3_KEY_SECRET`. `php` uses `BACKUP_S3_UPLOAD_SCRIPT`, `http` uses `BACKUP_S3_UPLOAD_URL`, and `auto` tries direct upload before falling back to PHP/HTTP.
-- The built-in API is disabled by default. Set `BACKUP_API_ENABLED=true` before starting `cmd/sdl-db-backup-api`.
-- API bearer auth is also disabled by default. When `BACKUP_API_AUTH_ENABLED=true`, every request must send `Authorization: Bearer <BACKUP_API_BEARER_TOKEN>`.
-- Logical backup scope is optional. Empty `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES` means the old behavior: back up every granted non-system database, all tables, and all views that pass the validation probe.
-- Automatic logical discovery skips databases matching `bk_*` unless they are explicitly listed in `BACKUP_LOGICAL_DATABASES`.
-- Table scope applies only to logical backups. Physical backup is a full MySQL data-file backup and is not table-selective.
-- Physical backup currently supports direct S3 streaming only. If `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false`, the physical backup is skipped.
-- Physical backup can use a different MySQL user from logical backup. `DB_USER` is for logical dumps, while `BACKUP_XTRABACKUP_USER` is for xtrabackup.
-- Logical dumps keep full schema coverage (tables, views, triggers, events, and routines) while using `--no-tablespaces` to avoid needing `PROCESS` for logical backups on newer MySQL 8.0 servers.
-- The logical backup MySQL user should not be an application/editor account. Grant it only `SELECT`, `SHOW VIEW`, `TRIGGER`, and `EVENT` on the application databases it must dump, plus global `SHOW_ROUTINE`.
-- `SHOW DATABASES` only returns databases the logical backup user can access. That is expected when you grant only the selected application databases.
-- When `BACKUP_LOGICAL_TABLES` is set, the runner checks the live schema first and skips any requested tables or views that no longer exist, fail validation, or are otherwise error-prone instead of failing the whole database dump.
-- The backup runner attempts to set `@@GLOBAL.max_execution_time=0` during logical dumps. A restricted backup user may not have that privilege; the warning is non-fatal and backups continue.
-- The physical backup MySQL user needs these grants: `BACKUP_ADMIN`, `PROCESS`, `RELOAD`, `LOCK TABLES`, `REPLICATION CLIENT`, plus `SELECT` on `performance_schema.replication_group_members` and `performance_schema.keyring_component_status` when those tables exist.
-- `daily` supports one or more fixed clock times. Example: `daily@00:00,06:00,12:00,18:00`.
-- Schedule state is tracked in `logs/backup-schedule-state.json`, so `daily`, `weekly`, and `interval` runs are evaluated separately for logical and physical backups.
-- If a `daily@...` or `weekly@...` slot is missed because the host or timer was down, the next runner start now catches up that missed slot instead of silently waiting for the next future slot.
-- The systemd timer must run often enough for the schedule you choose. If you want very specific execution times, adjust `sdl-db-backup.timer` so it invokes the service at or before those times.
-- The service unit now uses `TimeoutStartSec=0`, so application-level env timeouts control the run length.
-- Runtime logs are written to both the per-run log file and the daily aggregate log in `BACKUP_LOG_DIR`.
-
-## Least-Privilege Logical Backup User
-
-Use a dedicated MySQL account for `DB_USER` and `DB_PASS`. Do not reuse a phpMyAdmin or application user that can edit data or change schema.
-
-SQL setup example:
-
-```sql
-CREATE USER 'backup_logical'@'localhost' IDENTIFIED BY 'strong-password';
-
-GRANT SHOW_ROUTINE ON *.* TO 'backup_logical'@'localhost';
-
-GRANT SELECT, SHOW VIEW, TRIGGER, EVENT ON `central_db`.* TO 'backup_logical'@'localhost';
-GRANT SELECT, SHOW VIEW, TRIGGER, EVENT ON `messenger_db`.* TO 'backup_logical'@'localhost';
-GRANT SELECT, SHOW VIEW, TRIGGER, EVENT ON `app_db`.* TO 'backup_logical'@'localhost';
-
-FLUSH PRIVILEGES;
+```text
+s3://<bucket>/<logical-prefix>/<run-id>/COMPLETED.json
 ```
 
-phpMyAdmin setup:
+### Physical backups and retention
 
-1. Open `User accounts` and create `backup_logical`.
-2. Leave global data-editing and DDL privileges unchecked.
-3. For each application database that should be backed up, grant only `SELECT`, `SHOW VIEW`, `TRIGGER`, and `EVENT`.
-4. Use the SQL tab to run `GRANT SHOW_ROUTINE ON *.* TO 'backup_logical'@'localhost';` if phpMyAdmin does not expose that privilege directly.
-5. Update `.env` so `DB_USER` and `DB_PASS` use the new backup-only account.
+| Setting | Purpose |
+| --- | --- |
+| `BACKUP_PHYSICAL_ENABLED` | Enables MySQL physical backup. Defaults to `false`. |
+| `BACKUP_PHYSICAL_SCHEDULE` | Independent physical schedule using the same format as logical scheduling. |
+| `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED` | Enables physical S3 streaming. A disabled upload skips physical work. |
+| `BACKUP_XTRABACKUP_*`, `BACKUP_XBCLOUD_*` | XtraBackup client, credentials, socket, working directory, and parallelism controls. |
+| `BACKUP_RETENTION_DAILY`, `BACKUP_RETENTION_WEEKLY`, `BACKUP_RETENTION_MONTHLY` | GFS local retention counts. |
+| `BACKUP_RETENTION_MIN_VERIFIED` | Number of newest sandbox-restore-verified local runs protected from cleanup. |
 
-This user will be able to read only the databases you grant. New databases are not included automatically; add a matching per-database `GRANT` when needed.
+## Run, validate, and restore
 
-## Output Layout
+All commands use `.env` by default. Point to another file with
+`BACKUP_ENV_FILE=/path/to/.env`.
 
-Each run creates a timestamped folder and stores one file per logical database dump:
-
-- `<BACKUP_DIR>/<YYYY-MM-DD_HH-MM-SS>/<db_name>.sql.gz`
-
-Physical backups are streamed directly to S3:
-
-- `s3://<BACKUP_S3_BUCKET>/<BACKUP_S3_PHYSICAL_PREFIX>/<run_id>/physical.xbstream`
-
-## Manual Test
-
-- Go: `go run main.go`
-- TUI: `go run ./cmd/sdl-db-backup-tui`
-- API: `go run ./cmd/sdl-db-backup-api`
-- Bash: `bash ./mysql_full_backup.sh`
-
-## TUI
-
-The TUI provides:
-
-- dashboard-style home screen with latest run, health, runtime/API status, and quick actions
-- sidebar + content panel navigation
-- Schedule page for permanent or temporary backup timing changes
-- searchable `.env` settings editor with masked secret fields, API settings, and systemd unit names
-- unsaved-change tracking and safe save back to `.env`
-- multi-step manual backup workflow with preview + confirmation
-- live backup logs and final summary during manual runs
-- log viewer for daily logs and the run index
-- run history from `backup-runs.jsonl`, including selected-run upload state plus the latest logical validation or sandbox restore-test result
-- Health page for latest run status, runtime metadata, scheduler guidance, and logical/physical prerequisite checks
-- Observability page for metrics-path state, last metrics write result, and parsed `.prom` values
-- Systemd page for user service/timer actions and rendered unit previews
-- command palette for fast keyboard control, API auth toggle, and bearer token rotation
-- global notifications for command success, failure, confirmations, saves, and silent state changes
-- terminal-size-aware layout that reserves space for notifications, prompts, and scrollable content
-
-Launch it from the project directory:
+### Commands
 
 ```bash
-cd /opt/sdl-db-backup
-go run ./cmd/sdl-db-backup-tui
-```
+# Run the scheduled non-interactive runner once.
+go run ./main.go
 
-If you prefer a binary:
+# Inspect a recorded run and show restore-oriented details.
+go run ./main.go inspect <run-id>
 
-```bash
-cd /opt/sdl-db-backup
-go build -o sdl-db-backup-tui ./cmd/sdl-db-backup-tui
-./sdl-db-backup-tui
-```
+# Decrypt an encrypted logical artifact to stdout.
+go run ./main.go decrypt <artifact.sql.gz.enc> > artifact.sql.gz
 
-### TUI Pages
+# Validate a logical run; omit --run-id to use the newest recorded run.
+go run ./cmd/sdl-db-backup-validate --mode logical --run-id <run-id>
 
-- `Dashboard`: latest run, health cards, runtime/API status, and quick actions
-- `Dashboard`: latest run, latest persisted validation/test summary, health cards, runtime/API status, and quick actions
-- `Backup`: multi-step manual backup workflow
-- `Schedule`: change backup timing permanently or temporarily
-- `Config`: searchable editor for `.env` values used by the backup service
-- `Logs`: daily logs and run index viewer with filtering
-- `History`: previous runs from `backup-runs.jsonl`
-- `Health`: latest recorded run, effective runtime values, scheduler guidance, and prerequisite checks
-- `Observability`: inspect metrics-path permissions, last metrics refresh result, and parsed Prometheus values
-- `Systemd`: manage user service/timer units, review generated unit templates, and keep scheduling user-scoped
+# Run the destructive sandbox restore test. Use only an isolated restore host.
+go run ./cmd/sdl-db-backup-validate --mode restore --run-id <run-id>
 
-### TUI Keyboard Controls
+# Download, extract, and prepare a completed physical stream on a verification host.
+go run ./main.go physical-validate <run-id>
 
-- `1` to `9`: jump directly to `Dashboard`, `Backup`, `Schedule`, `Config`, `Logs`, `History`, `Health`, `Observability`, and `Systemd`
-- `Tab`: switch focus between the left menu and the current page content
-- `Esc`: move focus back to the left menu
-- `j` / `k` or arrow keys: move through lists, settings, workflow options, and actions
-- `Enter`: activate the selected row, option, or action
-- `:`: open the command palette
-- `/`: search settings on `Config`, filter logs on `Logs`
-- `PageUp` / `PageDown`: scroll long config lists
-- `g` / `G`: jump to top or bottom in scrollable pages
-- `r`: refresh the current page where supported
-- `b`: jump to the backup workflow
-- `g`: jump to dashboard
-- `Ctrl+S`: save `.env` from the `Config` page
-- `q`: quit, with confirmation when config has unsaved changes
-
-### TUI Config Editing
-
-From the `Config` page:
-
-1. Press `4` to open `Config`
-2. Press `Tab` if the left menu still has focus
-3. Press `/` to search by env key, group, label, or value
-4. Move through matching settings with `j` / `k` or arrow keys
-5. Press `Enter` to edit the selected value
-6. Press `Enter` again to apply the new value to the temporary draft, or `Esc` to cancel editing
-7. Press `Ctrl+S` to safely write your drafted changes back to the permanent `.env` file!
-
-Notes:
-
-- secret fields stay masked until `v` toggles reveal mode
-- the config list is scrollable with `j` / `k`, `PageUp` / `PageDown`, and `g` / `G`
-- the selected setting shows a hint explaining what the value controls
-- saving updates managed `.env` keys while preserving unrelated comments and unknown lines as much as possible
-- invalid values are shown inline on the selected setting
-- `Ctrl+R` on the Config page reloads the current `.env` from disk and discards draft changes
-
-### TUI Schedule Manager
-
-From the `Schedule` page:
-
-1. Press `3` to open `Schedule`
-2. Choose `Apply Mode`
-3. Use `permanent .env` when the change should become the saved default
-4. Use `temporary override` when the change should last only until an expiry
-5. Choose `Temporary Duration` when using temporary mode
-6. Edit `Logical Backup Times`, `Physical/S3 Backup Time`, upload toggles, or `Retention Days`
-7. Press `a`, `s`, or select `Apply Changes`
-
-Schedule selection:
-
-- common schedule and retention values open as selectable options instead of requiring manual typing
-- use `j` / `k` to choose an option
-- press `Enter` to apply the selected option
-- press `e` inside the option picker to type a custom value
-- the selected row shows a hint explaining the effect of that setting
-
-Schedule fields:
-
-- `Logical Backup Times` writes `BACKUP_LOGICAL_SCHEDULE`
-- `Physical/S3 Backup Time` writes `BACKUP_PHYSICAL_SCHEDULE`
-- `Logical S3 Upload` writes `BACKUP_LOGICAL_S3_UPLOAD_ENABLED`
-- `Physical S3 Stream` writes `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED`
-- `Retention Daily` writes `BACKUP_RETENTION_DAILY`
-
-Permanent changes:
-
-- saved directly to `.env`
-- used by every future service and manual run
-
-Temporary changes:
-
-- saved to `<BACKUP_LOG_DIR>/backup-temporary-overrides.json`
-- used by scheduled service runs, health checks, and effective config loading until expiry
-- do not rewrite `.env`
-- can be cleared from the Schedule page with `c` or `Clear Temporary Override`
-
-Examples:
-
-- `daily@02:00` means one backup per day at 02:00
-- `daily@00:00,06:00,12:00,18:00` means four backups per day
-- `weekly@sun,02:00` is useful for weekly physical/S3 backups
-- `interval@6h` runs after six hours have passed since the last successful backup
-
-### TUI Manual Backup Flow
-
-From the `Backup` page:
-
-1. Choose `Run Mode`
-2. Choose `Upload Mode`
-3. Choose backup scope
-   - Press `c`, `n`, or right arrow to continue with the current scope
-   - Press `Enter` on a database to inspect its tables and views
-   - Press `/` inside an object list to search/filter tables and views by name
-   - Press `Space` to select or clear a database/table/view
-   - Press `d` to select all listed databases, or all currently shown objects in the current database
-   - Press `m`, move to another row, then press `s` to select that whole range
-   - Press `u` to clear the current range, or clear all object checks in the current database
-   - Press `PageUp` / `PageDown` or `Home` / `End` to move quickly through long object lists
-   - Press `Esc`, `b`, left arrow, or `h` inside an object list to return to the database list
-   - Press `p` or `Ctrl+S` to save the current selected scope permanently to `.env`
-4. Leave `Force Run Now` enabled if you want the run to ignore the saved schedule for that one execution
-5. Optionally enable `Preflight Only` if you want validation without producing backup artifacts
-6. Review the preview panel
-7. Activate `Run Backup` or `Run Preflight`
-8. Watch progress in the same `Backup` page live log panel
-
-Manual run notes:
-
-- the manual preview uses in-memory overrides only
-- `.env` is not rewritten unless you explicitly save from `Config`
-- `local only` disables uploads for that run
-- `preflight only` validates MySQL connectivity, directory permissions, metrics-path writability, and upload prerequisites without creating backups
-- health checks also flag ownership drift in backup and log directories so old root-owned leftovers are easier to spot before cleanup fails
-
-### Logical Backup Performance
-
-The safest speed improvements in this repo are:
-
-- `BACKUP_LOGICAL_GZIP_LEVEL=1`
-  - keeps the same `.sql.gz` output format but reduces CPU time noticeably
-- `BACKUP_LOGICAL_PARALLEL=2`
-  - runs up to two logical database dumps concurrently
-- `BACKUP_XTRABACKUP_PARALLEL`
-  - already controls physical backup parallelism for `xtrabackup`
-- `BACKUP_XBCLOUD_PARALLEL`
-  - controls concurrent `xbcloud` chunk uploads during physical S3 streaming
-- `BACKUP_XBCLOUD_FIFO_STREAMS`
-  - controls `xbcloud` fifo reader concurrency; keep this modest, usually `1`
-- adaptive resource tuning
-  - reduces logical and physical concurrency automatically when the server is already busy
-  - can increase concurrency slightly on quieter hosts within CPU limits
-- physical upload retry on S3 throttling
-  - retries `xbcloud`/S3 throttling failures such as `Please reduce your request rate`
-  - each retry backs off and lowers both `xtrabackup` and `xbcloud` parallelism
-
-Recommended starting values:
-
-- smaller MySQL host: `BACKUP_LOGICAL_PARALLEL=1`
-- balanced/default: `BACKUP_LOGICAL_PARALLEL=2`
-- larger host with spare I/O: `BACKUP_LOGICAL_PARALLEL=3`
-
-Do not raise logical parallelism aggressively unless you have confirmed the database server, disk, and network can absorb the extra load.
-- physical backup is skipped in `local only` mode because physical backup currently supports direct S3 streaming only
-- database/table selection applies to logical backups only
-- no database selected means all granted databases
-- selected database with no selected tables means all validated tables and views in that database
-- on the scope step, `c`, `n`, right arrow, or `l` moves forward to preview
-- table/object lists are shown in multiple columns when the terminal is wide enough
-- table search filters selection actions, so `d` selects only matching shown objects when a search is active
-- permanent scope save writes `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES`; scheduled logical backups use that saved scope
-
-### TUI Logs, Health, And Systemd
-
-From `Logs`:
-
-- `d` loads the current daily aggregate log
-- `i` loads the structured run index
-- `/` filters visible log lines
-- `f` toggles follow mode
-- `g` / `G` jump to top or bottom
-
-From `Health`:
-
-- `r` reloads the latest run summary and prerequisite checks
-
-From `Systemd`:
-
-- `r` reloads user-unit state
-- `Enter` runs the selected action after confirmation
-- service and timer actions call the matching `systemctl --user` command
-- the selected action shows the exact command and what it does
-- the page shows the last command result as success or failure
-
-The TUI systemd page expects the service and timer to be installed as user units. If they are missing, the page will show `load=not-found`.
-
-## Health Check
-
-Use the CLI health check to see:
-
-- latest recorded run status from `backup-runs.jsonl`
-- today’s aggregate daily log path
-- logical backup prerequisite status
-- physical backup prerequisite status
-
-Run it from the project directory:
-
-```bash
-cd /opt/sdl-db-backup
+# Show health and prerequisite information.
 go run ./cmd/sdl-db-backup-health
-```
 
-Example output covers:
-
-- config file in use
-- today’s daily log file path
-- latest run timestamp, status, run folder, log file, duration, and database counts
-- logical prerequisite status
-- physical prerequisite status
-
-## Commands
-
-Use these commands from the project directory:
-
-```bash
-cd /opt/sdl-db-backup
-```
-
-Run the normal non-interactive backup runner:
-
-```bash
-go run main.go
-```
-
-Run the alternate non-interactive entrypoint:
-
-```bash
-go run main_sync_upload.go
-```
-
-Open the TUI:
-
-```bash
+# Launch the TUI or REST API.
 go run ./cmd/sdl-db-backup-tui
-```
-
-Run the health check:
-
-```bash
-go run ./cmd/sdl-db-backup-health
-```
-
-Build local binaries:
-
-```bash
-go build -o sdl-db-backup-tui ./cmd/sdl-db-backup-tui
-go build -o sdl-db-backup-health ./cmd/sdl-db-backup-health
-go build -o sdl-db-backup main.go
-```
-
-## Configuring The Service
-
-The backup service reads its configuration from `.env` by default.
-
-Main config file:
-
-- `.env`
-
-Example template:
-
-- `.env.example`
-
-Use a different env file temporarily:
-
-```bash
-BACKUP_ENV_FILE=/opt/sdl-db-backup/.env.test go run main.go
-```
-
-Important config groups:
-
-- database connection: `DB_USER`, `DB_PASS`, `DB_HOST`, `DB_PORT`
-- local storage: `BACKUP_DIR`, `BACKUP_LOG_DIR`
-- logical backup behavior: `BACKUP_LOGICAL_*`
-- physical backup behavior: `BACKUP_PHYSICAL_*`
-- physical backup MySQL user: `BACKUP_XTRABACKUP_*`
-- shared S3 settings: `BACKUP_S3_*`
-- upload helper settings: `BACKUP_S3_UPLOAD_*`
-
-## Logs And Backup Output
-
-Backups:
-
-- logical dumps: `<BACKUP_DIR>/<run_id>/<db_name>.sql.gz`
-- physical backup: streamed to `s3://<bucket>/<prefix>/<run_id>/physical.xbstream`
-
-Logs:
-
-- per-run log: `<BACKUP_LOG_DIR>/<run_id>.log`
-- daily aggregate log: `<BACKUP_LOG_DIR>/<YYYY-MM-DD>.log`
-- run index: `<BACKUP_LOG_DIR>/backup-runs.jsonl`
-- schedule state: `<BACKUP_LOG_DIR>/backup-schedule-state.json`
-- temporary schedule override: `<BACKUP_LOG_DIR>/backup-temporary-overrides.json`
-
-Quick inspection commands:
-
-```bash
-ls -lh /srv/backup/mysql_backup/logs
-tail -n 50 /srv/backup/mysql_backup/logs/$(date +%F).log
-tail -n 20 /srv/backup/mysql_backup/logs/backup-runs.jsonl
-```
-
-## Systemd Control Commands
-
-Install user units:
-
-```bash
-mkdir -p ~/.config/systemd/user
-# Render unit contents from the TUI or API, then write them to:
-#   ~/.config/systemd/user/<service-name>
-#   ~/.config/systemd/user/<timer-name>
-systemctl --user daemon-reload
-systemctl --user enable --now <your BACKUP_SYSTEMD_TIMER_NAME>
-```
-
-Common control commands:
-
-```bash
-systemctl --user status <your BACKUP_SYSTEMD_SERVICE_NAME>
-systemctl --user status <your BACKUP_SYSTEMD_TIMER_NAME>
-systemctl --user start <your BACKUP_SYSTEMD_SERVICE_NAME>
-systemctl --user restart <your BACKUP_SYSTEMD_SERVICE_NAME>
-systemctl --user stop <your BACKUP_SYSTEMD_SERVICE_NAME>
-systemctl --user start <your BACKUP_SYSTEMD_TIMER_NAME>
-systemctl --user stop <your BACKUP_SYSTEMD_TIMER_NAME>
-systemctl --user enable <your BACKUP_SYSTEMD_TIMER_NAME>
-systemctl --user disable <your BACKUP_SYSTEMD_TIMER_NAME>
-journalctl --user -u <your BACKUP_SYSTEMD_SERVICE_NAME> -n 100 --no-pager
-```
-
-## REST API
-
-Run the API server:
-
-```bash
 go run ./cmd/sdl-db-backup-api
 ```
 
-The API is disabled by default. Set `BACKUP_API_ENABLED=true` to start it. If `BACKUP_API_AUTH_ENABLED=true`, send:
+`RESTORE_TEST_ENABLED=true` is required for sandbox restore testing. Its
+`RESTORE_TEST_*` target must be isolated: the test creates and removes bounded
+temporary databases. Never point it at production.
+
+For physical and PITR recovery procedures, prerequisites, and release gates,
+follow [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md).
+
+### Output layout
 
 ```text
-Authorization: Bearer <BACKUP_API_BEARER_TOKEN>
+<BACKUP_DIR>/
+  <run-id>/
+    <database>.sql.gz[.enc]
+    manifest.json
+
+<BACKUP_LOG_DIR>/
+  <run-id>.log
+  YYYY-MM-DD.log
+  backup-runs.jsonl
+  backup-schedule-state.json
+  backup-temporary-overrides.json
 ```
 
-Key routes:
+The JSONL history and each run manifest contain the outcome, per-database
+results, hashes, upload state, cleanup status, and persisted validation data.
 
-- `GET /api/v1/backups/health`
-- `GET /api/v1/backups/runs`
-- `POST /api/v1/backups/runs`
-- `GET /api/v1/backups/runs/{run_id}`
-- `GET /api/v1/config`
-- `PUT /api/v1/config`
-- `GET /api/v1/config/effective`
-- `GET|PUT|DELETE /api/v1/schedules/temporary-overrides`
-- `GET /api/v1/systemd`
-- `POST /api/v1/systemd/actions/{action}`
-- `GET /api/v1/logs/daily`
-- `GET /api/v1/logs/runs`
-- `GET /api/v1/storage`
-- `GET /api/v1/runtime`
-- `GET /api/v1/restore`
-- `POST /api/v1/restore/validate`
-- `POST /api/v1/restore/test`
+## Scheduling and operations
 
-See `openapi.json` for the machine-readable contract.
-
-Example authenticated request:
+The application decides whether logical and physical work is due; the systemd
+timer only needs to invoke the runner often enough to meet the finest schedule
+you configure. User-scoped systemd is the default installation model.
 
 ```bash
-curl \
-  -H "Authorization: Bearer $BACKUP_API_BEARER_TOKEN" \
-  http://127.0.0.1:8086/api/v1/backups/health
+systemctl --user daemon-reload
+systemctl --user enable --now sdl-db-backup.timer
+systemctl --user status sdl-db-backup.timer
+journalctl --user -u sdl-db-backup.service -n 100 --no-pager
 ```
 
-The health API and `cmd/sdl-db-backup-health` output now include the latest run's derived `FinalOutcome` so external tooling can distinguish upload failures, partial database failures, cleanup-only issues, and early aborts without re-implementing that logic.
-The run-history APIs now include `final_outcome` on each returned run object for the same reason.
-The health report, TUI health screen, and `cmd/sdl-db-backup-health` output also surface the configured restore-verification profile so operators can see whether restore checks are schema-only, exact-row, or sampled-content aware.
+The TUI Systemd page and `GET /api/v1/systemd` can render host-specific unit
+content. The templates [sdl-db-backup.service](sdl-db-backup.service) and
+[sdl-db-backup.timer](sdl-db-backup.timer) require their placeholders to be
+rendered before direct use.
 
-Restore validation routes:
+Use temporary overrides for bounded testing without rewriting `.env`. The TUI
+Schedule page or `PUT /api/v1/schedules/temporary-overrides` stores them in
+`<BACKUP_LOG_DIR>/backup-temporary-overrides.json`; they expire automatically.
 
-- `GET /api/v1/restore` returns whether logical validation is available, whether full sandbox restore testing is enabled, which restore-verification depth is configured (`exact_row_counts`, `sample_data_checks`, `sample_data_rows`), and which restore endpoints are supported
-- `POST /api/v1/restore/validate` performs gzip/signature validation on a previous logical backup run using `{"run_id":"..."}`
-- `POST /api/v1/restore/test` performs a full sandbox import test for a previous logical backup run using `{"run_id":"..."}` and requires `RESTORE_TEST_ENABLED=true`
-- Full sandbox restore testing verifies the imported database with exact restored base-table, view, trigger, routine, and event count checks plus a schema fingerprint comparison over those object names/types instead of relying on approximate row metadata. It uses a bounded temporary database name safe for the selected engine's naming limits; PostgreSQL correctly records zero events because PostgreSQL has no event-scheduler object type.
-- If `BACKUP_EXACT_ROW_COUNTS=true` was enabled when the backup was created, sandbox restore testing also verifies the exact restored per-table row counts and the exact restored total row count for each logical database.
-- If `BACKUP_SAMPLE_DATA_CHECKS=true` was enabled when the backup was created, sandbox restore testing also verifies sampled row-content hashes for base tables with primary keys.
-- Logical backup validation also verifies the persisted `.sql.gz` artifact SHA-256 when that hash is present in the run manifest, so corruption or tampering can be detected before restore.
-- When available, logical validation also verifies a SHA-256 of the decompressed SQL payload itself, so actual logical dump content changes are detected even if only the gzip wrapper changes.
-- Restore validation and sandbox restore-test outcomes are persisted back into `backup-runs.jsonl` and the run folder `manifest.json` when the local run record still exists
+### MySQL least privilege
 
-CLI restore-validation helpers:
+Use a dedicated logical backup account. For each database it needs, grant
+`SELECT`, `SHOW VIEW`, `TRIGGER`, and `EVENT`, plus global `SHOW_ROUTINE` when
+routine dumps are required. PITR metadata and physical backups need additional
+privileges; use the exact requirements and review process in
+[RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md). Do not reuse an application
+or administrative account.
 
-- `go run ./cmd/sdl-db-backup-validate --mode logical --run-id <run_id>` performs logical artifact validation for a specific run
-- `go run ./cmd/sdl-db-backup-validate --mode restore --run-id <run_id>` performs the full sandbox restore test for a specific run and exits non-zero on validation failure
-- If `--run-id` is omitted, the CLI validates the latest recorded run from `backup-runs.jsonl`
+## Interfaces and observability
 
-## Duplicate Backup Audit
+### Terminal UI
 
-Scheduled runs are intended to execute only as the `backup` user. The runner now refuses the scheduled `runner` path when it is launched as `root`, so any root-owned scheduled execution is a misconfiguration outside the normal user timer flow.
+The Bubble Tea TUI manages manual runs, scoped logical backups, permanent and
+temporary schedules, `.env` edits, logs, run history, health, metrics, and
+user-systemd actions. Its full keyboard and page reference is in
+[TUI_REFERENCE.md](TUI_REFERENCE.md).
 
-If you still see both `root` and `backup` owned backup runs, the extra scheduler is outside this repo. Audit these locations:
+### REST API
 
-- `sudo crontab -l` and `/etc/cron.*`
-- `systemctl list-timers --all` and `systemctl list-units --type=service`
-- deployment hooks, supervisor configs, or any wrapper script that invokes both `main.go` and `mysql_full_backup.sh`
-- root-owned systemd units or timers that call `go run ./main.go` directly
+Set `BACKUP_API_ENABLED=true` and run `go run ./cmd/sdl-db-backup-api`. The API
+listens on `127.0.0.1:8086` and serves `/api/v1` by default. Enable bearer
+authentication with `BACKUP_API_AUTH_ENABLED=true` and
+`BACKUP_API_BEARER_TOKEN`.
 
-## Temporary Test Overrides
+The API exposes health, runs, configuration, temporary schedules, systemd,
+logs, storage, runtime data, and logical restore validation/testing. The full
+machine-readable contract is [openapi.json](openapi.json).
 
-You can test backups without changing `.env` by overriding environment variables for a single command.
+### Prometheus, Grafana, and Loki
 
-Force both logical and physical backups immediately:
+The runner writes Node Exporter textfile metrics to `BACKUP_METRICS_FILE`
+(default: `/var/lib/node_exporter/textfile_collector/sdl_db_backup.prom`).
+Metrics represent current run state, outcomes, freshness, size, duration,
+cleanup, validation, adaptive parallelism, and physical retry state.
 
-```bash
-cd /opt/sdl-db-backup
-BACKUP_LOGICAL_SCHEDULE=always \
-BACKUP_PHYSICAL_SCHEDULE=always \
-go run main_sync_upload.go
-```
+- [GRAFANA_BACKUP_MONITORING.md](GRAFANA_BACKUP_MONITORING.md): metric catalog,
+  PromQL, dashboard layout, and alert guidance.
+- [observability/README.md](observability/README.md): import order for the
+  dashboard and alert bundle.
+- [prometheus/README.md](prometheus/README.md): scrape and alert-rule setup.
+- [loki/README.md](loki/README.md): ship per-run logs to Loki.
 
-Force only logical backup:
+## Documentation map
 
-```bash
-cd /opt/sdl-db-backup
-BACKUP_LOGICAL_SCHEDULE=always \
-BACKUP_PHYSICAL_ENABLED=false \
-go run main_sync_upload.go
-```
-
-Run a local-only logical backup with the restricted logical user:
-
-```bash
-cd /opt/sdl-db-backup
-BACKUP_LOGICAL_SCHEDULE=always \
-BACKUP_PHYSICAL_ENABLED=false \
-BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false \
-go run main_sync_upload.go
-```
-
-Force only physical backup:
-
-```bash
-cd /opt/sdl-db-backup
-BACKUP_LOGICAL_ENABLED=false \
-BACKUP_PHYSICAL_SCHEDULE=always \
-go run main_sync_upload.go
-```
-
-Skip S3 upload temporarily during a test run:
-
-```bash
-cd /opt/sdl-db-backup
-BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false \
-BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false \
-go run main_sync_upload.go
-```
-
-Use a separate test env file instead of the real `.env`:
-
-```bash
-cd /opt/sdl-db-backup
-cp .env .env.test
-BACKUP_ENV_FILE=/opt/sdl-db-backup/.env.test go run main_sync_upload.go
-```
-
-Notes:
-- `always` ignores the saved schedule timing for that run and forces the backup to be due immediately.
-- `daily@00:00,06:00,12:00,18:00` runs on fixed clock slots and does not drift based on the last successful backup timestamp.
-- `interval@6h` starts counting from the last successful logical backup time stored in `logs/backup-schedule-state.json`.
-- `weekly@sun,02:00` is satisfied once the physical backup succeeds at any time after that Sunday's `02:00` window.
-
-Example schedules:
-- Run logical backups every invocation: `BACKUP_LOGICAL_SCHEDULE=always`
-- Run logical backups once a day at 07:30: `BACKUP_LOGICAL_SCHEDULE=daily@07:30`
-- Run logical backups on fixed slots (midnight, 6am, noon, 6pm): `BACKUP_LOGICAL_SCHEDULE=daily@00:00,06:00,12:00,18:00`
-- Run physical backups once a week on Sunday at 02:00: `BACKUP_PHYSICAL_SCHEDULE=weekly@sun,02:00`
-- Run physical backups on fixed slots (midnight, 6am, noon, 6pm): `BACKUP_PHYSICAL_SCHEDULE=daily@00:00,06:00,12:00,18:00`
-- Run physical backups every 24 hours: `BACKUP_PHYSICAL_SCHEDULE=interval@24h`
+| Document | Use it for |
+| --- | --- |
+| [WORKING.md](WORKING.md) | Architecture, execution flow, methods, and files produced by a run. |
+| [CHANGES.md](CHANGES.md) | Current implementation changes and compatibility notes. |
+| [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md) | Physical restore drills, PITR, S3 durability controls, and release gates. |
+| [TUI_REFERENCE.md](TUI_REFERENCE.md) | TUI pages, workflow, and keyboard controls. |
+| [GRAFANA_BACKUP_MONITORING.md](GRAFANA_BACKUP_MONITORING.md) | Metrics, dashboards, PromQL, and alerts. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and test expectations. |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting policy. |
