@@ -122,8 +122,8 @@ func ValidateLogicalRun(cfg Config, runID string) (LogicalValidationResult, erro
 
 	allValid := true
 	for _, dbRes := range run.Results {
-		dbPath := filepath.Join(run.RunFolder, dbRes.Name+".sql.gz")
-		dbValid, dbErr := validateLogicalArtifact(dbPath, dbRes.ArtifactSHA256, dbRes.SQLSHA256)
+		dbPath := logicalArtifactPath(run.RunFolder, dbRes)
+		dbValid, dbErr := validateLogicalArtifactForEngineWithEncryption(cfg.DBEngine, dbPath, dbRes.ArtifactSHA256, dbRes.SQLSHA256, cfg.EncryptionKey)
 		errMsg := ""
 		if dbErr != nil {
 			errMsg = dbErr.Error()
@@ -144,7 +144,33 @@ func ValidateLogicalRun(cfg Config, runID string) (LogicalValidationResult, erro
 	return res, nil
 }
 
+func logicalArtifactPath(runFolder string, dbRes databaseResult) string {
+	if base := filepath.Base(strings.TrimSpace(dbRes.OutputPath)); base != "" && base != "." {
+		return filepath.Join(runFolder, base)
+	}
+	encrypted := filepath.Join(runFolder, dbRes.Name+".sql.gz.enc")
+	if _, err := os.Stat(encrypted); err == nil {
+		return encrypted
+	}
+	return filepath.Join(runFolder, dbRes.Name+".sql.gz")
+}
+
 func validateGzipSQLFile(path string, expectedSHA256 string) (bool, error) {
+	return validateGzipSQLFileWithEncryption(path, expectedSHA256, "")
+}
+
+func validateGzipSQLFileWithEncryption(path string, expectedSHA256 string, encryptionKey string) (bool, error) {
+	return validateGzipSQLFileForEngineWithEncryption("mysql", path, expectedSHA256, encryptionKey)
+}
+
+func dumpCompletionSignature(engine string) string {
+	if strings.EqualFold(strings.TrimSpace(engine), "postgres") {
+		return "-- PostgreSQL database dump complete"
+	}
+	return "-- Dump completed"
+}
+
+func validateGzipSQLFileForEngineWithEncryption(engine string, path string, expectedSHA256 string, encryptionKey string) (bool, error) {
 	if strings.TrimSpace(expectedSHA256) != "" {
 		hash, err := fileSHA256(path)
 		if err != nil {
@@ -167,7 +193,19 @@ func validateGzipSQLFile(path string, expectedSHA256 string) (bool, error) {
 	}
 	defer file.Close()
 
-	gz, err := gzip.NewReader(file)
+	var source io.Reader = file
+	if encryptedArtifactPath(path) {
+		if strings.TrimSpace(encryptionKey) == "" {
+			return false, fmt.Errorf("encrypted artifact requires BACKUP_ENCRYPTION_KEY")
+		}
+		decrypted, err := DecryptReader(file, encryptionKey)
+		if err != nil {
+			return false, err
+		}
+		source = decrypted
+	}
+
+	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return false, fmt.Errorf("invalid gzip header: %v", err)
 	}
@@ -179,14 +217,23 @@ func validateGzipSQLFile(path string, expectedSHA256 string) (bool, error) {
 	}
 
 	tailStr := string(tw.buf)
-	if !strings.Contains(tailStr, "-- Dump completed") {
-		return false, fmt.Errorf("missing '-- Dump completed' signature at end of file")
+	signature := dumpCompletionSignature(engine)
+	if !strings.Contains(tailStr, signature) {
+		return false, fmt.Errorf("missing %q signature at end of file", signature)
 	}
 
 	return true, nil
 }
 
 func validateLogicalArtifact(path string, expectedArtifactSHA256 string, expectedSQLSHA256 string) (bool, error) {
+	return validateLogicalArtifactWithEncryption(path, expectedArtifactSHA256, expectedSQLSHA256, "")
+}
+
+func validateLogicalArtifactWithEncryption(path string, expectedArtifactSHA256 string, expectedSQLSHA256 string, encryptionKey string) (bool, error) {
+	return validateLogicalArtifactForEngineWithEncryption("mysql", path, expectedArtifactSHA256, expectedSQLSHA256, encryptionKey)
+}
+
+func validateLogicalArtifactForEngineWithEncryption(engine string, path string, expectedArtifactSHA256 string, expectedSQLSHA256 string, encryptionKey string) (bool, error) {
 	if strings.TrimSpace(expectedArtifactSHA256) != "" {
 		hash, err := fileSHA256(path)
 		if err != nil {
@@ -200,7 +247,7 @@ func validateLogicalArtifact(path string, expectedArtifactSHA256 string, expecte
 		}
 	}
 	if strings.TrimSpace(expectedSQLSHA256) != "" {
-		hash, err := gzipPayloadSHA256(path)
+		hash, err := gzipPayloadSHA256WithEncryption(path, encryptionKey)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return false, fmt.Errorf("file missing")
@@ -211,7 +258,7 @@ func validateLogicalArtifact(path string, expectedArtifactSHA256 string, expecte
 			return false, fmt.Errorf("sql sha256 mismatch: manifest=%s actual=%s", expectedSQLSHA256, hash)
 		}
 	}
-	return validateGzipSQLFile(path, "")
+	return validateGzipSQLFileForEngineWithEncryption(engine, path, "", encryptionKey)
 }
 
 func FullRestoreValidation(cfg Config, runID string, progress func(string)) (LogicalValidationResult, error) {
@@ -222,6 +269,17 @@ func FullRestoreValidation(cfg Config, runID string, progress func(string)) (Log
 	}
 	if cfg.RestoreTestHost == "" {
 		return res, fmt.Errorf("RESTORE_TEST_HOST is not configured")
+	}
+	engine := strings.ToLower(strings.TrimSpace(cfg.DBEngine))
+	if engine == "" {
+		engine = "mysql"
+	}
+	restoreClientBin := cfg.MySQLBin
+	if engine == "postgres" {
+		restoreClientBin = "psql"
+	}
+	if _, err := exec.LookPath(restoreClientBin); err != nil {
+		return res, fmt.Errorf("restore validation requires %s in PATH: %w", restoreClientBin, err)
 	}
 
 	run, err := ReadRunByID(cfg.RunLogPath, runID)
@@ -276,8 +334,34 @@ func FullRestoreValidation(cfg Config, runID string, progress func(string)) (Log
 	return res, nil
 }
 
-func queryNamesWithTestCmd(testCmd func(...string) *exec.Cmd, query string) ([]string, error) {
-	cmd := testCmd("-N", "-e", query)
+type restoreTestClient struct {
+	engine  string
+	testCmd func(...string) *exec.Cmd
+}
+
+func (c restoreTestClient) query(dbName string, query string) *exec.Cmd {
+	if c.engine == "postgres" {
+		return c.testCmd("-d", dbName, "-X", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c", query)
+	}
+	return c.testCmd("-N", "-e", query)
+}
+
+func (c restoreTestClient) sampleQuery(dbName string, query string) *exec.Cmd {
+	if c.engine == "postgres" {
+		return c.testCmd("-d", dbName, "-X", "-A", "-t", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", query)
+	}
+	return c.testCmd("--batch", "--raw", "--skip-column-names", "-e", query)
+}
+
+func (c restoreTestClient) importSQL(dbName string) *exec.Cmd {
+	if c.engine == "postgres" {
+		return c.testCmd("-d", dbName, "-X", "-v", "ON_ERROR_STOP=1")
+	}
+	return c.testCmd(dbName)
+}
+
+func queryNamesWithTestCmd(client restoreTestClient, dbName string, query string) ([]string, error) {
+	cmd := client.query(dbName, query)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("%s", strings.TrimSpace(string(out)))
@@ -296,17 +380,14 @@ func queryNamesWithTestCmd(testCmd func(...string) *exec.Cmd, query string) ([]s
 	return names, nil
 }
 
-func restoredSchemaFingerprint(testCmd func(...string) *exec.Cmd, dbName string) (string, error) {
-	queryMap := map[string]string{
-		"table":   fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName),
-		"view":    fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s' ORDER BY TABLE_NAME", dbName),
-		"trigger": fmt.Sprintf("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='%s' ORDER BY TRIGGER_NAME", dbName),
-		"routine": fmt.Sprintf("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' ORDER BY ROUTINE_NAME", dbName),
-		"event":   fmt.Sprintf("SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA='%s' ORDER BY EVENT_NAME", dbName),
+func restoredSchemaFingerprint(client restoreTestClient, dbName string) (string, error) {
+	queryMap := mysqlRestoreSchemaQueries(dbName)
+	if client.engine == "postgres" {
+		queryMap = postgresRestoreSchemaQueries()
 	}
 	sections := map[string][]string{}
 	for key, query := range queryMap {
-		names, err := queryNamesWithTestCmd(testCmd, query)
+		names, err := queryNamesWithTestCmd(client, dbName, query)
 		if err != nil {
 			return "", fmt.Errorf("failed to read restored %s names: %v", key, err)
 		}
@@ -315,15 +396,42 @@ func restoredSchemaFingerprint(testCmd func(...string) *exec.Cmd, dbName string)
 	return buildSchemaFingerprint(sections), nil
 }
 
-func restoredExactRowCount(testCmd func(...string) *exec.Cmd, dbName string) (int64, error) {
-	tableNames, err := queryNamesWithTestCmd(testCmd, fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName))
+func mysqlRestoreSchemaQueries(dbName string) map[string]string {
+	return map[string]string{
+		"table":   fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName),
+		"view":    fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s' ORDER BY TABLE_NAME", dbName),
+		"trigger": fmt.Sprintf("SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='%s' ORDER BY TRIGGER_NAME", dbName),
+		"routine": fmt.Sprintf("SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s' ORDER BY ROUTINE_NAME", dbName),
+		"event":   fmt.Sprintf("SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA='%s' ORDER BY EVENT_NAME", dbName),
+	}
+}
+
+func postgresRestoreSchemaQueries() map[string]string {
+	return map[string]string{
+		"table":   "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
+		"view":    "SELECT viewname FROM pg_views WHERE schemaname='public' ORDER BY viewname",
+		"trigger": "SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema='public' ORDER BY trigger_name",
+		"routine": "SELECT routine_name FROM information_schema.routines WHERE specific_schema='public' ORDER BY routine_name",
+		"event":   "SELECT NULL WHERE false",
+	}
+}
+
+func restoredBaseTableNamesQuery(engine string, dbName string) string {
+	if engine == "postgres" {
+		return "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+	}
+	return fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName)
+}
+
+func restoredExactRowCount(client restoreTestClient, dbName string) (int64, error) {
+	tableNames, err := queryNamesWithTestCmd(client, dbName, restoredBaseTableNamesQuery(client.engine, dbName))
 	if err != nil {
 		return 0, fmt.Errorf("failed to read restored base table names: %v", err)
 	}
 	var total int64
 	for _, tableName := range tableNames {
-		query := "SELECT COUNT(*) FROM " + quoteIdentifier("mysql", dbName) + "." + quoteIdentifier("mysql", tableName)
-		cmd := testCmd("-N", "-e", query)
+		query := restoredTableCountQuery(client.engine, dbName, tableName)
+		cmd := client.query(dbName, query)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return 0, fmt.Errorf("failed to count restored rows for table=%s: %s", tableName, strings.TrimSpace(string(out)))
@@ -337,16 +445,23 @@ func restoredExactRowCount(testCmd func(...string) *exec.Cmd, dbName string) (in
 	return total, nil
 }
 
-func restoredExactTableRowCounts(testCmd func(...string) *exec.Cmd, dbName string) (map[string]int64, int64, error) {
-	tableNames, err := queryNamesWithTestCmd(testCmd, fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName))
+func restoredTableCountQuery(engine string, dbName string, tableName string) string {
+	if engine == "postgres" {
+		return "SELECT COUNT(*) FROM " + quoteIdentifier("postgres", "public") + "." + quoteIdentifier("postgres", tableName)
+	}
+	return "SELECT COUNT(*) FROM " + quoteIdentifier("mysql", dbName) + "." + quoteIdentifier("mysql", tableName)
+}
+
+func restoredExactTableRowCounts(client restoreTestClient, dbName string) (map[string]int64, int64, error) {
+	tableNames, err := queryNamesWithTestCmd(client, dbName, restoredBaseTableNamesQuery(client.engine, dbName))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read restored base table names: %v", err)
 	}
 	counts := make(map[string]int64, len(tableNames))
 	var total int64
 	for _, tableName := range tableNames {
-		query := "SELECT COUNT(*) FROM " + quoteIdentifier("mysql", dbName) + "." + quoteIdentifier("mysql", tableName)
-		cmd := testCmd("-N", "-e", query)
+		query := restoredTableCountQuery(client.engine, dbName, tableName)
+		cmd := client.query(dbName, query)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to count restored rows for table=%s: %s", tableName, strings.TrimSpace(string(out)))
@@ -361,7 +476,18 @@ func restoredExactTableRowCounts(testCmd func(...string) *exec.Cmd, dbName strin
 	return counts, total, nil
 }
 
-func restoredPrimaryKeyColumns(testCmd func(...string) *exec.Cmd, dbName string, tableName string) ([]string, error) {
+func restoredPrimaryKeyColumns(client restoreTestClient, dbName string, tableName string) ([]string, error) {
+	if client.engine == "postgres" {
+		query := `
+SELECT a.attname
+FROM pg_index i
+JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+WHERE i.indrelid = 'public.` + strings.ReplaceAll(tableName, "'", "''") + `'::regclass
+  AND i.indisprimary
+ORDER BY array_position(i.indkey, a.attnum)
+`
+		return queryNamesWithTestCmd(client, dbName, query)
+	}
 	query := fmt.Sprintf(`
 SELECT k.COLUMN_NAME
 FROM information_schema.TABLE_CONSTRAINTS t
@@ -374,17 +500,17 @@ WHERE t.CONSTRAINT_TYPE = 'PRIMARY KEY'
   AND t.TABLE_NAME = '%s'
 ORDER BY k.ORDINAL_POSITION
 `, dbName, tableName)
-	return queryNamesWithTestCmd(testCmd, query)
+	return queryNamesWithTestCmd(client, dbName, query)
 }
 
-func restoredSampleRowHashes(testCmd func(...string) *exec.Cmd, dbName string, limit int) (map[string]string, error) {
-	tableNames, err := queryNamesWithTestCmd(testCmd, fmt.Sprintf("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE' ORDER BY TABLE_NAME", dbName))
+func restoredSampleRowHashes(client restoreTestClient, dbName string, limit int) (map[string]string, error) {
+	tableNames, err := queryNamesWithTestCmd(client, dbName, restoredBaseTableNamesQuery(client.engine, dbName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read restored base table names: %v", err)
 	}
 	hashes := map[string]string{}
 	for _, tableName := range tableNames {
-		pkCols, err := restoredPrimaryKeyColumns(testCmd, dbName, tableName)
+		pkCols, err := restoredPrimaryKeyColumns(client, dbName, tableName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read restored primary key columns table=%s: %v", tableName, err)
 		}
@@ -393,10 +519,10 @@ func restoredSampleRowHashes(testCmd func(...string) *exec.Cmd, dbName string, l
 		}
 		orderBy := make([]string, 0, len(pkCols))
 		for _, col := range pkCols {
-			orderBy = append(orderBy, quoteIdentifier("mysql", col))
+			orderBy = append(orderBy, quoteIdentifier(client.engine, col))
 		}
-		query := "SELECT * FROM " + quoteIdentifier("mysql", dbName) + "." + quoteIdentifier("mysql", tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
-		cmd := testCmd("--batch", "--raw", "--skip-column-names", "-e", query)
+		query := restoredSampleRowsQuery(client.engine, dbName, tableName, orderBy, limit)
+		cmd := client.sampleQuery(dbName, query)
 		hash, err := queryOutputSHA256(cmd, "restored sample data hash")
 		if err != nil {
 			return nil, fmt.Errorf("restored sample data hash failed table=%s: %v", tableName, err)
@@ -406,44 +532,50 @@ func restoredSampleRowHashes(testCmd func(...string) *exec.Cmd, dbName string, l
 	return hashes, nil
 }
 
+func restoredSampleRowsQuery(engine string, dbName string, tableName string, orderBy []string, limit int) string {
+	if engine == "postgres" {
+		return "SELECT * FROM " + quoteIdentifier("postgres", "public") + "." + quoteIdentifier("postgres", tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return "SELECT * FROM " + quoteIdentifier("mysql", dbName) + "." + quoteIdentifier("mysql", tableName) + " ORDER BY " + strings.Join(orderBy, ", ") + fmt.Sprintf(" LIMIT %d", limit)
+}
+
 func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bool, error) {
-	gzPath := filepath.Join(runFolder, dbRes.Name+".sql.gz")
+	gzPath := logicalArtifactPath(runFolder, dbRes)
 	if _, err := os.Stat(gzPath); os.IsNotExist(err) {
 		return false, fmt.Errorf("dump file missing")
 	}
 
-	tempDB := restoreTempDatabaseName(dbRes.Name)
-
-	testCmd := func(args ...string) *exec.Cmd {
-		ctx, _ := context.WithTimeout(context.Background(), 30*time.Minute)
-		cmdArgs := []string{
-			"-h", cfg.RestoreTestHost,
-			"-P", cfg.RestoreTestPort,
-			"-u", cfg.RestoreTestUser,
-		}
-		if cfg.RestoreTestPass != "" {
-			cmdArgs = append(cmdArgs, "-p"+cfg.RestoreTestPass)
-		}
-		cmdArgs = append(cmdArgs, args...)
-		return exec.CommandContext(ctx, cfg.MySQLBin, cmdArgs...)
+	engine := strings.ToLower(strings.TrimSpace(cfg.DBEngine))
+	if engine == "" {
+		engine = "mysql"
 	}
+	tempDB := restoreTempDatabaseNameForEngine(engine, dbRes.Name)
+	restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer restoreCancel()
 
-	dropCmd := testCmd("-e", fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", tempDB))
+	testCmd := restoreTestCommand(restoreCtx, cfg, engine)
+	client := restoreTestClient{engine: engine, testCmd: testCmd}
+
+	adminDatabase := ""
+	if engine == "postgres" {
+		adminDatabase = "postgres"
+	}
+	dropCmd := client.query(adminDatabase, fmt.Sprintf("DROP DATABASE IF EXISTS %s", quoteIdentifier(engine, tempDB)))
 	if out, err := dropCmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("failed to drop temp db: %s", string(out))
+		return false, fmt.Errorf("failed to drop temp db: %s", strings.TrimSpace(string(out)))
 	}
 
-	createCmd := testCmd("-e", fmt.Sprintf("CREATE DATABASE `%s`", tempDB))
+	createCmd := client.query(adminDatabase, fmt.Sprintf("CREATE DATABASE %s", quoteIdentifier(engine, tempDB)))
 	if out, err := createCmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("failed to create temp db: %s", string(out))
+		return false, fmt.Errorf("failed to create temp db: %s", strings.TrimSpace(string(out)))
 	}
 
 	defer func() {
-		cleanupCmd := testCmd("-e", fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", tempDB))
+		cleanupCmd := client.query(adminDatabase, fmt.Sprintf("DROP DATABASE IF EXISTS %s", quoteIdentifier(engine, tempDB)))
 		_ = cleanupCmd.Run()
 	}()
 
-	importCmd := testCmd(tempDB)
+	importCmd := client.importSQL(tempDB)
 
 	gzFile, err := os.Open(gzPath)
 	if err != nil {
@@ -451,7 +583,19 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 	}
 	defer gzFile.Close()
 
-	gzReader, err := gzip.NewReader(gzFile)
+	var source io.Reader = gzFile
+	if encryptedArtifactPath(gzPath) {
+		if strings.TrimSpace(cfg.EncryptionKey) == "" {
+			return false, fmt.Errorf("encrypted artifact requires BACKUP_ENCRYPTION_KEY")
+		}
+		decrypted, err := DecryptReader(gzFile, cfg.EncryptionKey)
+		if err != nil {
+			return false, fmt.Errorf("decrypt artifact: %w", err)
+		}
+		source = decrypted
+	}
+
+	gzReader, err := gzip.NewReader(source)
 	if err != nil {
 		return false, err
 	}
@@ -462,7 +606,22 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 		return false, fmt.Errorf("import failed: %s", string(out))
 	}
 
-	tableCountCmd := testCmd("-N", "-e", fmt.Sprintf("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE'", tempDB))
+	if len(dbRes.SelectedTables) > 0 {
+		for _, name := range dbRes.SelectedTables {
+			query := restoredSelectedObjectQuery(engine, tempDB, name)
+			out, err := client.query(tempDB, query).CombinedOutput()
+			if err != nil {
+				return false, fmt.Errorf("failed to verify restored selected object %s: %s", name, string(out))
+			}
+			count, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+			if err != nil || count != 1 {
+				return false, fmt.Errorf("selected object missing after restore: %s", name)
+			}
+		}
+		return true, nil
+	}
+
+	tableCountCmd := client.query(tempDB, restoredBaseTableCountQuery(engine, tempDB))
 	out, err := tableCountCmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to count restored base tables: %s", string(out))
@@ -481,7 +640,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 		return false, fmt.Errorf("base table count mismatch: manifest=%d, restored=%d", dbRes.TableCount, tableCount)
 	}
 
-	viewCountCmd := testCmd("-N", "-e", fmt.Sprintf("SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s'", tempDB))
+	viewCountCmd := client.query(tempDB, restoredViewCountQuery(engine, tempDB))
 	out, err = viewCountCmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to count restored views: %s", string(out))
@@ -500,7 +659,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 		return false, fmt.Errorf("view count mismatch: manifest=%d, restored=%d", dbRes.ViewCount, viewCount)
 	}
 
-	triggerCountCmd := testCmd("-N", "-e", fmt.Sprintf("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='%s'", tempDB))
+	triggerCountCmd := client.query(tempDB, restoredTriggerCountQuery(engine, tempDB))
 	out, err = triggerCountCmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to count restored triggers: %s", string(out))
@@ -519,7 +678,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 		return false, fmt.Errorf("trigger count mismatch: manifest=%d, restored=%d", dbRes.TriggerCount, triggerCount)
 	}
 
-	routineCountCmd := testCmd("-N", "-e", fmt.Sprintf("SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s'", tempDB))
+	routineCountCmd := client.query(tempDB, restoredRoutineCountQuery(engine, tempDB))
 	out, err = routineCountCmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to count restored routines: %s", string(out))
@@ -538,7 +697,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 		return false, fmt.Errorf("routine count mismatch: manifest=%d, restored=%d", dbRes.RoutineCount, routineCount)
 	}
 
-	eventCountCmd := testCmd("-N", "-e", fmt.Sprintf("SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='%s'", tempDB))
+	eventCountCmd := client.query(tempDB, restoredEventCountQuery(engine, tempDB))
 	out, err = eventCountCmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to count restored events: %s", string(out))
@@ -557,7 +716,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 		return false, fmt.Errorf("event count mismatch: manifest=%d, restored=%d", dbRes.EventCount, eventCount)
 	}
 
-	fingerprint, err := restoredSchemaFingerprint(testCmd, tempDB)
+	fingerprint, err := restoredSchemaFingerprint(client, tempDB)
 	if err != nil {
 		return false, err
 	}
@@ -566,7 +725,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 	}
 
 	if dbRes.RowCountMode == "exact" {
-		restoredTableRows, restoredRows, err := restoredExactTableRowCounts(testCmd, tempDB)
+		restoredTableRows, restoredRows, err := restoredExactTableRowCounts(client, tempDB)
 		if err != nil {
 			return false, err
 		}
@@ -590,7 +749,7 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 	}
 
 	if len(dbRes.SampleRowHashes) > 0 && dbRes.SampleRowCount > 0 {
-		restoredHashes, err := restoredSampleRowHashes(testCmd, tempDB, dbRes.SampleRowCount)
+		restoredHashes, err := restoredSampleRowHashes(client, tempDB, dbRes.SampleRowCount)
 		if err != nil {
 			return false, err
 		}
@@ -611,8 +770,84 @@ func testRestoreDatabase(cfg Config, runFolder string, dbRes DatabaseResult) (bo
 	return true, nil
 }
 
+func restoreTestCommand(ctx context.Context, cfg Config, engine string) func(...string) *exec.Cmd {
+	if engine == "postgres" {
+		return func(args ...string) *exec.Cmd {
+			cmdArgs := []string{"-h", cfg.RestoreTestHost, "-p", cfg.RestoreTestPort, "-U", cfg.RestoreTestUser}
+			cmdArgs = append(cmdArgs, args...)
+			cmd := exec.CommandContext(ctx, "psql", cmdArgs...)
+			cmd.Env = append(os.Environ(), "PGPASSWORD="+cfg.RestoreTestPass)
+			return cmd
+		}
+	}
+
+	return func(args ...string) *exec.Cmd {
+		cmdArgs := []string{"-h", cfg.RestoreTestHost, "-P", cfg.RestoreTestPort, "-u", cfg.RestoreTestUser}
+		if cfg.RestoreTestPass != "" {
+			cmdArgs = append(cmdArgs, "-p"+cfg.RestoreTestPass)
+		}
+		cmdArgs = append(cmdArgs, args...)
+		return exec.CommandContext(ctx, cfg.MySQLBin, cmdArgs...)
+	}
+}
+
+func restoredSelectedObjectQuery(engine string, dbName string, objectName string) string {
+	if engine == "postgres" {
+		return "SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='" + strings.ReplaceAll(objectName, "'", "''") + "' AND c.relkind IN ('r','p','v','m','f')"
+	}
+	return fmt.Sprintf(
+		"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'",
+		strings.ReplaceAll(dbName, "'", "''"),
+		strings.ReplaceAll(objectName, "'", "''"),
+	)
+}
+
+func restoredBaseTableCountQuery(engine string, dbName string) string {
+	if engine == "postgres" {
+		return "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public'"
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='%s' AND TABLE_TYPE='BASE TABLE'", dbName)
+}
+
+func restoredViewCountQuery(engine string, dbName string) string {
+	if engine == "postgres" {
+		return "SELECT COUNT(*) FROM pg_views WHERE schemaname='public'"
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA='%s'", dbName)
+}
+
+func restoredTriggerCountQuery(engine string, dbName string) string {
+	if engine == "postgres" {
+		return "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='public'"
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA='%s'", dbName)
+}
+
+func restoredRoutineCountQuery(engine string, dbName string) string {
+	if engine == "postgres" {
+		return "SELECT COUNT(*) FROM information_schema.routines WHERE specific_schema='public'"
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='%s'", dbName)
+}
+
+func restoredEventCountQuery(engine string, dbName string) string {
+	if engine == "postgres" {
+		return "SELECT 0"
+	}
+	return fmt.Sprintf("SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA='%s'", dbName)
+}
+
 func restoreTempDatabaseName(dbName string) string {
+	return restoreTempDatabaseNameForEngine("mysql", dbName)
+}
+
+func restoreTempDatabaseNameForEngine(engine string, dbName string) string {
 	const maxLen = 64
+	maxNameLen := maxLen
+	if engine == "postgres" {
+		// PostgreSQL identifiers are limited to 63 bytes by default (NAMEDATALEN-1).
+		maxNameLen = 63
+	}
 	base := strings.ToLower(strings.TrimSpace(dbName))
 	if base == "" {
 		base = "db"
@@ -636,7 +871,7 @@ func restoreTempDatabaseName(dbName string) string {
 	_, _ = hasher.Write([]byte(dbName))
 	suffix := fmt.Sprintf("%08x", hasher.Sum32())
 	prefix := "test_restore_"
-	maxBaseLen := maxLen - len(prefix) - 1 - len(suffix)
+	maxBaseLen := maxNameLen - len(prefix) - 1 - len(suffix)
 	if maxBaseLen < 1 {
 		maxBaseLen = 1
 	}

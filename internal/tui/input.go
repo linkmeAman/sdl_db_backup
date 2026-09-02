@@ -25,10 +25,10 @@ func (m model) handleKey(key tea.KeyMsg) (model, tea.Cmd) {
 	if m.confirmMessage != "" {
 		switch key.String() {
 		case "left", "h":
-			m.confirmSelected = 1
+			m.confirmSelected = 0
 			return m, nil
 		case "right", "l":
-			m.confirmSelected = 0
+			m.confirmSelected = 1
 			return m, nil
 		case "y":
 			action := m.confirmAction
@@ -350,13 +350,13 @@ func (m model) applyConfigChanges() (model, tea.Cmd) {
 		m.pushToast("warning", "no changes to apply")
 		return m, nil
 	}
-	
+
 	err := backupapp.SaveConfig(m.envPath, m.draft)
 	if err != nil {
 		m.pushToast("error", "failed to save .env: "+err.Error())
 		return m, nil
 	}
-	
+
 	m.dirty = false
 	m.pushToast("ok", "saved config to .env")
 	// Reload config to ensure everything is synced
@@ -372,7 +372,8 @@ func (m model) handleEditor(key tea.KeyMsg) (model, tea.Cmd) {
 			field := &m.fields[idx]
 			if err := field.Apply(&m.draft, value); err != nil {
 				field.Error = err.Error()
-				m.pushToast("error", field.Key+": "+err.Error())
+				m.pushToast("error", "fix "+field.Label+" before continuing")
+				return m, nil
 			} else {
 				field.Value = value
 				field.Error = ""
@@ -750,6 +751,9 @@ func (m model) handleHistoryKey(key tea.KeyMsg) (model, tea.Cmd) {
 			m.historySelected--
 		}
 	case "k", "up":
+		if len(m.history) == 0 {
+			return m, nil
+		}
 		m.historySelected++
 		if m.historySelected >= len(m.history) {
 			m.historySelected = len(m.history) - 1

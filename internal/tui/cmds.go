@@ -247,9 +247,9 @@ func loadLogs(source, path string) tea.Cmd {
 					"Path: " + path,
 					"Run a backup or wait for the scheduled service to create this log.",
 				}
-				return logsMsg{source: source, lines: lines, missing: true}
+				return logsMsg{source: source, path: path, lines: lines, missing: true}
 			}
-			return logsMsg{source: source, err: err}
+			return logsMsg{source: source, path: path, err: err}
 		}
 		defer file.Close()
 		var ring [1000]string
@@ -261,7 +261,7 @@ func loadLogs(source, path string) tea.Cmd {
 			count++
 		}
 		if err := scanner.Err(); err != nil {
-			return logsMsg{source: source, err: err}
+			return logsMsg{source: source, path: path, err: err}
 		}
 
 		var lines []string
@@ -278,7 +278,7 @@ func loadLogs(source, path string) tea.Cmd {
 			lines = append([]string{fmt.Sprintf("... (showing last 1000 lines of %d total lines) ...", count)}, lines...)
 		}
 
-		return logsMsg{source: source, lines: lines, err: nil}
+		return logsMsg{source: source, path: path, lines: lines}
 	}
 }
 

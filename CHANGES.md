@@ -2,6 +2,18 @@
 
 ## Current Architecture
 
+## Reliability hardening (unreleased)
+
+- replaced logical artifact encryption with versioned, authenticated AES-256-GCM streaming and strict key validation; added legacy-read compatibility plus encrypted validation, inspect, restore, and CLI decrypt support
+- direct S3 logical uploads now verify uploaded object size and write `COMPLETED.json` as the final remote commit marker; physical stream uploads verify their object and write `PHYSICAL_COMPLETED.json`
+- full backups now fail closed when objects would be omitted; intentional table-scoped or omission-based runs are recorded as partial rather than full success
+- added local retention protection for recent sandbox-restore-verified backups and atomic writes for manifests, schedule state, overrides, and run history
+- changed remote upload, physical backup, and root-runner defaults to explicit opt-in; root system-wide installation remains an explicit opt-in action
+- added MySQL PITR manifest metadata (per-dump source-data coordinates and a clearly labelled server observation), plus an operational binlog-replay runbook
+- added PostgreSQL-aware logical validation and sandbox restore verification
+- added resilient direct-S3 multipart uploads for large files, with retry, abort-on-failure, signed multipart queries, and final object verification
+- added a non-destructive `physical-validate <run-id>` drill that downloads, extracts, and prepares a completed physical stream without touching a MySQL server
+
 The project no longer relies on one large `main.go` flow only.
 
 - `main.go` and `main_sync_upload.go` are non-interactive entrypoints

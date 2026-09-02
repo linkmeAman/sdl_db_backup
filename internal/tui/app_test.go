@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -422,6 +423,65 @@ func TestMissingLogFileShowsInformationalMessage(t *testing.T) {
 	}
 	if len(logs.lines) == 0 || !strings.Contains(logs.lines[0], "No daily log exists yet") {
 		t.Fatalf("unexpected missing log message: %+v", logs.lines)
+	}
+}
+
+func TestConfirmationArrowKeysMatchHighlightedButton(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	m.confirm("Run a destructive action?", nil)
+
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRight})
+	if updated.confirmSelected != 1 {
+		t.Fatalf("expected right to select Confirm, got %d", updated.confirmSelected)
+	}
+
+	updated, _ = updated.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	if updated.confirmSelected != 0 {
+		t.Fatalf("expected left to select Cancel, got %d", updated.confirmSelected)
+	}
+}
+
+func TestInvalidConfigEditStaysOpenWithHelpfulError(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	fieldIndex := -1
+	for i, field := range m.fields {
+		if field.Key == "BACKUP_LOGICAL_ENABLED" {
+			fieldIndex = i
+			break
+		}
+	}
+	if fieldIndex < 0 {
+		t.Fatal("expected a logical enabled field")
+	}
+
+	m.startEditing(fieldIndex)
+	m.editorInput.SetValue("definitely")
+	updated, _ := m.handleEditor(tea.KeyMsg{Type: tea.KeyEnter})
+	if !updated.editorActive {
+		t.Fatal("expected editor to remain open after invalid input")
+	}
+	if got := updated.fields[fieldIndex].Error; !strings.Contains(got, "true or false") {
+		t.Fatalf("expected boolean validation error, got %q", got)
+	}
+	if got := updated.toasts[len(updated.toasts)-1].text; !strings.Contains(got, "Logical Enabled") {
+		t.Fatalf("expected a field-specific recovery toast, got %q", got)
+	}
+}
+
+func TestLogErrorsRemainVisibleWithRetryGuidance(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	updatedModel, _ := m.Update(logsMsg{
+		source: "run index",
+		path:   "/unreadable/backup-runs.jsonl",
+		err:    os.ErrPermission,
+	})
+	updated := updatedModel.(model)
+
+	view := updated.viewLogs(100)
+	for _, want := range []string{"Could not load run index logs", "permission denied", "press r to retry", "/unreadable/backup-runs.jsonl"} {
+		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
+			t.Fatalf("expected log error view to include %q, got:\n%s", want, view)
+		}
 	}
 }
 

@@ -29,6 +29,11 @@ type InspectRun struct {
 
 // RestoreCommandsForDB returns the exact restore command for a specific logical DB.
 func (r InspectRun) RestoreCommandsForDB(db InspectDB, dbUser string) []string {
+	if encryptedArtifactPath(db.FilePath) {
+		return []string{
+			fmt.Sprintf("sdl-db-backup decrypt %s | gunzip | mysql -u %s -p %s", db.FilePath, dbUser, db.Name),
+		}
+	}
 	return []string{
 		fmt.Sprintf("zcat %s | mysql -u %s -p %s", db.FilePath, dbUser, db.Name),
 	}
@@ -64,22 +69,27 @@ func InspectRunData(ctx context.Context, envPath string, runID string) (*Inspect
 		RunFolder: runFolder,
 	}
 
-	logicalFiles, err := filepath.Glob(filepath.Join(runFolder, "*.sql.gz"))
-	if err == nil {
-		for _, file := range logicalFiles {
-			stat, statErr := os.Stat(file)
-			sizeStr := "unknown size"
-			if statErr == nil {
-				sizeStr = humanize.Bytes(uint64(stat.Size()))
-			}
-			base := filepath.Base(file)
-			dbName := strings.TrimSuffix(base, ".sql.gz")
-			result.LogicalDBs = append(result.LogicalDBs, InspectDB{
-				Name:     dbName,
-				FilePath: file,
-				SizeStr:  sizeStr,
-			})
+	logicalFiles := []string{}
+	for _, pattern := range []string{"*.sql.gz", "*.sql.gz.enc"} {
+		files, err := filepath.Glob(filepath.Join(runFolder, pattern))
+		if err != nil {
+			continue
 		}
+		logicalFiles = append(logicalFiles, files...)
+	}
+	for _, file := range logicalFiles {
+		stat, statErr := os.Stat(file)
+		sizeStr := "unknown size"
+		if statErr == nil {
+			sizeStr = humanize.Bytes(uint64(stat.Size()))
+		}
+		base := filepath.Base(file)
+		dbName := strings.TrimSuffix(strings.TrimSuffix(base, ".enc"), ".sql.gz")
+		result.LogicalDBs = append(result.LogicalDBs, InspectDB{
+			Name:     dbName,
+			FilePath: file,
+			SizeStr:  sizeStr,
+		})
 	}
 
 	physicalFolder := filepath.Join(runFolder, "physical")

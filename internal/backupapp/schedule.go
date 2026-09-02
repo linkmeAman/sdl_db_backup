@@ -44,7 +44,7 @@ func saveScheduleState(path string, state scheduleState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(encoded, '\n'), 0o640)
+	return atomicWriteFile(path, append(encoded, '\n'), 0o640)
 }
 
 func parseClock(raw string) (int, int, error) {

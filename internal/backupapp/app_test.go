@@ -43,6 +43,9 @@ func TestBuildMySQLDumpArgsOmitDatabasesFlag(t *testing.T) {
 
 func TestBuildMySQLDumpArgsCanLimitTables(t *testing.T) {
 	args := buildMySQLDumpArgs("app_db", []string{"users", "orders"}, nil)
+	if slices.Contains(args, "--force") || slices.Contains(args, "--ignore-error=1356,1449,1227") {
+		t.Fatalf("expected complete dumps to fail on dump errors rather than silently skip objects: %v", args)
+	}
 	if !slices.Contains(args, "users") || !slices.Contains(args, "orders") {
 		t.Fatalf("expected selected tables in mysqldump args: %v", args)
 	}
@@ -611,13 +614,13 @@ func TestMarkLogicalUploadFailureUpdatesRunStatus(t *testing.T) {
 	}
 }
 
-func TestMarkLogicalUploadFailurePreservesPartialStatus(t *testing.T) {
+func TestMarkLogicalUploadFailureEscalatesPartialStatus(t *testing.T) {
 	record := runRecord{Status: "partial", FailureReason: "1 of 2 database backups failed"}
 
 	markLogicalUploadFailure(&record, errors.New("s3 unavailable"))
 
-	if record.Status != "partial" {
-		t.Fatalf("expected partial status preserved, got %q", record.Status)
+	if record.Status != "failed" {
+		t.Fatalf("expected upload failure to escalate partial status, got %q", record.Status)
 	}
 	if record.FailureReason != "1 of 2 database backups failed" {
 		t.Fatalf("expected original failure reason preserved, got %q", record.FailureReason)

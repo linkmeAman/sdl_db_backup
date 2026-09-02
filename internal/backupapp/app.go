@@ -23,6 +23,9 @@ type PhysicalBackupResult = physicalBackupResult
 type physicalBackupResult struct {
 	Status             string `json:"status"`
 	TargetDir          string `json:"target_dir,omitempty"`
+	RemoteSizeBytes    int64  `json:"remote_size_bytes,omitempty"`
+	RemoteETag         string `json:"remote_etag,omitempty"`
+	CompletionObject   string `json:"completion_object,omitempty"`
 	Duration           string `json:"duration"`
 	Error              string `json:"error,omitempty"`
 	Attempts           int    `json:"attempts,omitempty"`
@@ -34,27 +37,54 @@ type physicalBackupResult struct {
 type DatabaseResult = databaseResult
 
 type databaseResult struct {
-	Name              string            `json:"name"`
-	Status            string            `json:"status"`
-	Attempts          int               `json:"attempts"`
-	Duration          string            `json:"duration"`
-	OutputPath        string            `json:"output_path,omitempty"`
-	SizeBytes         int64             `json:"size_bytes,omitempty"`
-	ArtifactSHA256    string            `json:"artifact_sha256,omitempty"`
-	SQLSHA256         string            `json:"sql_sha256,omitempty"`
-	TableCount        int64             `json:"table_count,omitempty"`
-	ViewCount         int64             `json:"view_count,omitempty"`
-	TriggerCount      int64             `json:"trigger_count,omitempty"`
-	RoutineCount      int64             `json:"routine_count,omitempty"`
-	EventCount        int64             `json:"event_count,omitempty"`
-	SchemaFingerprint string            `json:"schema_fingerprint,omitempty"`
-	RowCounts         int64             `json:"row_counts,omitempty"`
-	RowCountMode      string            `json:"row_count_mode,omitempty"`
-	TableRowCounts    map[string]int64  `json:"table_row_counts,omitempty"`
-	SampleRowHashes   map[string]string `json:"sample_row_hashes,omitempty"`
-	SampleRowCount    int               `json:"sample_row_count,omitempty"`
-	ErrorCategory     string            `json:"error_category,omitempty"`
-	Error             string            `json:"error,omitempty"`
+	Name                string               `json:"name"`
+	Status              string               `json:"status"`
+	Attempts            int                  `json:"attempts"`
+	Duration            string               `json:"duration"`
+	OutputPath          string               `json:"output_path,omitempty"`
+	SizeBytes           int64                `json:"size_bytes,omitempty"`
+	ArtifactSHA256      string               `json:"artifact_sha256,omitempty"`
+	SQLSHA256           string               `json:"sql_sha256,omitempty"`
+	TableCount          int64                `json:"table_count,omitempty"`
+	ViewCount           int64                `json:"view_count,omitempty"`
+	TriggerCount        int64                `json:"trigger_count,omitempty"`
+	RoutineCount        int64                `json:"routine_count,omitempty"`
+	EventCount          int64                `json:"event_count,omitempty"`
+	SchemaFingerprint   string               `json:"schema_fingerprint,omitempty"`
+	RowCounts           int64                `json:"row_counts,omitempty"`
+	RowCountMode        string               `json:"row_count_mode,omitempty"`
+	TableRowCounts      map[string]int64     `json:"table_row_counts,omitempty"`
+	SampleRowHashes     map[string]string    `json:"sample_row_hashes,omitempty"`
+	SampleRowCount      int                  `json:"sample_row_count,omitempty"`
+	MySQLPITRCoordinate *mysqlPITRCoordinate `json:"mysql_pitr_coordinate,omitempty"`
+	SelectedTables      []string             `json:"selected_tables,omitempty"`
+	OmittedObjects      []string             `json:"omitted_objects,omitempty"`
+	ErrorCategory       string               `json:"error_category,omitempty"`
+	Error               string               `json:"error,omitempty"`
+}
+
+// mysqlPITRMetadata records the server state observed immediately before the
+// logical dumps start. It is deliberately distinct from the source-data
+// coordinates recorded on individual dump artifacts: parallel mysqldump
+// sessions do not share one global transaction snapshot.
+type mysqlPITRMetadata struct {
+	Status              string    `json:"status"`
+	CapturedAt          time.Time `json:"captured_at,omitempty"`
+	Method              string    `json:"method,omitempty"`
+	BinlogFile          string    `json:"binlog_file,omitempty"`
+	BinlogPosition      uint64    `json:"binlog_position,omitempty"`
+	ExecutedGTIDSet     string    `json:"executed_gtid_set,omitempty"`
+	ServerUUID          string    `json:"server_uuid,omitempty"`
+	ServerVersion       string    `json:"server_version,omitempty"`
+	SnapshotConsistency string    `json:"snapshot_consistency,omitempty"`
+	Note                string    `json:"note,omitempty"`
+	Error               string    `json:"error,omitempty"`
+}
+
+type mysqlPITRCoordinate struct {
+	BinlogFile     string `json:"binlog_file"`
+	BinlogPosition uint64 `json:"binlog_position"`
+	Method         string `json:"method"`
 }
 
 type RunResult = runRecord
@@ -72,6 +102,9 @@ type runRecord struct {
 	DatabasesTotal           int                        `json:"databases_total"`
 	DatabasesSucceeded       int                        `json:"databases_succeeded"`
 	DatabasesFailed          int                        `json:"databases_failed"`
+	LogicalBackupScope       string                     `json:"logical_backup_scope,omitempty"`
+	LogicalOmissions         []string                   `json:"logical_omissions,omitempty"`
+	MySQLPITR                *mysqlPITRMetadata         `json:"mysql_pitr,omitempty"`
 	Results                  []databaseResult           `json:"results,omitempty"`
 	PhysicalBackup           *physicalBackupResult      `json:"physical_backup,omitempty"`
 	ExitCode                 int                        `json:"-"`
@@ -331,7 +364,7 @@ func markLogicalUploadFailure(record *runRecord, err error) {
 	if record.FailureReason == "" {
 		record.FailureReason = "logical backup upload failed: " + err.Error()
 	}
-	if record.Status == "success" {
+	if record.Status != "failed" {
 		record.Status = "failed"
 	}
 }
@@ -648,18 +681,35 @@ func validatePrerequisites(cfg config, requireLogicalDump bool) error {
 	if cfg.DBUser == "" {
 		return errors.New("DB_USER is required")
 	}
+	if cfg.DBEngine != "mysql" && cfg.DBEngine != "postgres" {
+		return fmt.Errorf("unsupported DB_ENGINE=%q; expected mysql or postgres", cfg.DBEngine)
+	}
+	if cfg.MySQLPITRMetadataRequired && cfg.DBEngine != "mysql" {
+		return errors.New("BACKUP_MYSQL_PITR_METADATA_REQUIRED=true is supported only for DB_ENGINE=mysql")
+	}
 	if err := validateWritableDir(cfg.BackupDir); err != nil {
 		return err
 	}
 	if err := validateWritableDir(cfg.LogDir); err != nil {
 		return err
 	}
-	if _, err := exec.LookPath(cfg.MySQLBin); err != nil {
-		return fmt.Errorf("mysql binary %q not found in PATH: %w", cfg.MySQLBin, err)
-	}
-	if requireLogicalDump {
-		if _, err := exec.LookPath(cfg.MySQLDumpBin); err != nil {
-			return fmt.Errorf("mysqldump binary %q not found in PATH: %w", cfg.MySQLDumpBin, err)
+	if cfg.DBEngine == "postgres" {
+		if _, err := exec.LookPath("psql"); err != nil {
+			return fmt.Errorf("psql binary not found in PATH: %w", err)
+		}
+		if requireLogicalDump {
+			if _, err := exec.LookPath("pg_dump"); err != nil {
+				return fmt.Errorf("pg_dump binary not found in PATH: %w", err)
+			}
+		}
+	} else {
+		if _, err := exec.LookPath(cfg.MySQLBin); err != nil {
+			return fmt.Errorf("mysql binary %q not found in PATH: %w", cfg.MySQLBin, err)
+		}
+		if requireLogicalDump {
+			if _, err := exec.LookPath(cfg.MySQLDumpBin); err != nil {
+				return fmt.Errorf("mysqldump binary %q not found in PATH: %w", cfg.MySQLDumpBin, err)
+			}
 		}
 	}
 	if err := pingMySQL(cfg); err != nil {
@@ -701,6 +751,12 @@ func validateLogicalUploadPrerequisites(cfg config) error {
 		return errors.New("logical backup upload mode auto requires direct S3 credentials, BACKUP_S3_UPLOAD_SCRIPT, or BACKUP_S3_UPLOAD_URL")
 	default:
 		return fmt.Errorf("unsupported BACKUP_S3_UPLOAD_MODE=%q", cfg.S3UploadMode)
+	}
+	if cfg.RequireRemoteCompletion {
+		directReady := cfg.S3KeyID != "" && cfg.S3KeySecret != "" && cfg.S3Bucket != "" && cfg.S3Region != ""
+		if cfg.S3UploadMode != "" && cfg.S3UploadMode != "direct" && !(cfg.S3UploadMode == "auto" && directReady) {
+			return errors.New("BACKUP_REQUIRE_REMOTE_COMPLETION=true requires direct S3 upload, or auto mode with direct S3 credentials")
+		}
 	}
 	return nil
 }
@@ -900,6 +956,11 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	}
 
 	if cfg.PhysicalEnabled {
+		if cfg.DBEngine != "mysql" {
+			record.FailureReason = "physical backups are supported only for DB_ENGINE=mysql"
+			record.ExitCode = finalizeRun(cfg, &record, startedAt)
+			return record, nil
+		}
 		if !cfg.PhysicalS3UploadEnabled {
 			log.Printf("physical backup: skipped because BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false and physical mode only supports direct S3 upload")
 		} else {
@@ -960,8 +1021,10 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	stateDirty := false
 
 	if logicalDue {
-		restoreMaxExecTime := tryDisableMaxExecutionTime(cfg)
-		defer restoreMaxExecTime()
+		if cfg.DBEngine == "mysql" {
+			restoreMaxExecTime := tryDisableMaxExecutionTime(cfg)
+			defer restoreMaxExecTime()
+		}
 		logicalCfg := cfg
 		logicalCfg.LogicalParallel = resourceProfile.LogicalParallel
 
@@ -997,8 +1060,30 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 				record.ExitCode = finalizeRun(cfg, &record, startedAt)
 				return record, nil
 			}
+			if logicalCfg.DBEngine == "mysql" && logicalCfg.MySQLPITRMetadataEnabled {
+				pitrCtx, cancel := context.WithTimeout(ctx, logicalCfg.PreflightTimeout)
+				pitrMetadata, pitrErr := captureMySQLPITRMetadata(pitrCtx, logicalCfg)
+				cancel()
+				record.MySQLPITR = &pitrMetadata
+				if pitrErr != nil {
+					log.Printf("warning: could not capture MySQL PITR metadata: %v", pitrErr)
+					if logicalCfg.MySQLPITRMetadataRequired {
+						record.FailureReason = "required MySQL PITR metadata capture failed: " + pitrErr.Error()
+						record.ExitCode = finalizeRun(cfg, &record, startedAt)
+						return record, nil
+					}
+				} else {
+					log.Printf("captured MySQL PITR server observation binlog=%s position=%d", pitrMetadata.BinlogFile, pitrMetadata.BinlogPosition)
+				}
+			}
 			for _, result := range executeLogicalBackupTasks(logicalCfg, tasks) {
 				record.Results = append(record.Results, result)
+				if len(result.SelectedTables) > 0 {
+					record.LogicalBackupScope = "partial_table_scope"
+				}
+				for _, omitted := range result.OmittedObjects {
+					record.LogicalOmissions = append(record.LogicalOmissions, result.Name+":"+omitted)
+				}
 				if result.Status == "success" {
 					record.DatabasesSucceeded++
 					continue
@@ -1051,8 +1136,10 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	}
 
 	switch {
-	case record.DatabasesFailed == 0 && record.FailureReason == "":
+	case record.DatabasesFailed == 0 && record.FailureReason == "" && record.LogicalBackupScope == "" && len(record.LogicalOmissions) == 0:
 		record.Status = "success"
+	case record.DatabasesFailed == 0 && record.FailureReason == "":
+		record.Status = "partial"
 	case record.DatabasesSucceeded > 0:
 		record.Status = "partial"
 	default:

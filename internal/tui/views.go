@@ -495,7 +495,11 @@ func (m model) viewScopeSelector(width int) []string {
 		return lines
 	}
 	if m.scopeErr != "" {
-		lines = append(lines, bad.Render(m.scopeErr), "Press r to retry discovery.")
+		lines = append(lines,
+			bad.Render("Could not discover backup scope"),
+			"Details: "+m.scopeErr,
+			muted.Render("Check the database host, credentials, and network connection in Config, then press r to retry."),
+		)
 		return lines
 	}
 	if m.scopeLevel == "tables" {
@@ -555,7 +559,7 @@ func (m model) viewSchedule(width int) string {
 	}
 	lines := []string{
 		title.Render("Schedule Manager"),
-		muted.Render("enter edit/toggle   a apply   c clear temporary override   s save/apply"),
+		muted.Render("j/k move   enter choose/toggle   a apply   c clear temporary override"),
 		"",
 		"Mode: " + mode,
 	}
@@ -597,7 +601,7 @@ func (m model) viewConfig(width int) string {
 	}
 	header := []string{
 		title.Render("Config Editor"),
-		muted.Render("Search: " + emptyDefault(search, "none") + "   j/k scroll   pgup/pgdown   g/G top/bottom   s save   / search   v reveal"),
+		muted.Render("Search: " + emptyDefault(search, "none") + "   j/k move   enter edit   ctrl+s save   / search   v reveal"),
 		"",
 	}
 	visible := m.visibleFields()
@@ -633,9 +637,10 @@ func (m model) configContentLines(visible []int) ([]string, int) {
 		if m.editorActive && m.editorIndex == idx {
 			value = m.editorInput.View()
 		}
-		line := fmt.Sprintf(" %-34s │ %s", field.Key, value)
+		label := fitCell(field.Label, 20)
+		line := fmt.Sprintf(" %-20s %s │ %s", label, muted.Render(field.Key), value)
 		if field.Error != "" {
-			line += "  " + bad.Render(field.Error)
+			line += "  " + bad.Render("Invalid: "+field.Error)
 		}
 
 		// Determine full width for row styling
@@ -721,6 +726,15 @@ func (m model) viewLogs(width int) string {
 		header = "Logs: " + m.logSource + "   filter " + m.logSearch.View()
 	}
 	lines := []string{title.Render(header), muted.Render("d daily   i run index   / filter   f follow   g/G top/bottom"), ""}
+	if m.logErr != "" {
+		lines = append(lines,
+			bad.Render("Could not load "+m.logSource+" logs"),
+			"Details: "+m.logErr,
+			"Path: "+emptyDefault(m.logPath, "not available"),
+			muted.Render("Check that the configured log path is readable, then press r to retry. Press d for today's log or i for the run index."),
+		)
+		return strings.Join(lines, "\n")
+	}
 	lines = append(lines, m.logView.View())
 	return strings.Join(lines, "\n")
 }
@@ -728,7 +742,11 @@ func (m model) viewLogs(width int) string {
 func (m model) viewHistory(width int) string {
 	lines := []string{title.Render("Run History"), muted.Render("j/k up/down   c copy run-id   i inspect   v validate logical   t test sandbox restore   r refresh"), ""}
 	if m.historyErr != "" {
-		lines = append(lines, bad.Render(m.historyErr))
+		lines = append(lines,
+			bad.Render("Could not load run history"),
+			"Details: "+m.historyErr,
+			muted.Render("Check that the run index path is readable, then press r to retry."),
+		)
 		return strings.Join(lines, "\n")
 	}
 	lines = append(lines, fmt.Sprintf("  %-19s %-9s %-10s %-10s %s", "time", "status", "dbs", "duration", "run id"))
@@ -849,7 +867,11 @@ func (m model) viewHistory(width int) string {
 func (m model) viewHealth(width int) string {
 	lines := []string{sectionTitle.Render("Health Diagnostics"), muted.Render("r refresh"), muted.Render("Shows effective runtime values, including temporary overrides."), muted.Render("Grafana guide: GRAFANA_BACKUP_MONITORING.md"), ""}
 	if m.healthErr != "" {
-		lines = append(lines, bad.Render(m.healthErr))
+		lines = append(lines,
+			bad.Render("Health checks could not complete"),
+			"Details: "+m.healthErr,
+			muted.Render("Check Config and the prerequisite tools shown in the error, then press r to retry."),
+		)
 		m.healthView.SetContent(strings.Join(lines, "\n"))
 		return m.healthView.View()
 	}
@@ -961,7 +983,11 @@ func (m model) viewObservability(width int) string {
 	_ = width
 	lines := []string{sectionTitle.Render("Observability"), muted.Render("r refresh"), muted.Render("Shows metrics collector state and parsed .prom values."), ""}
 	if m.healthErr != "" {
-		lines = append(lines, bad.Render(m.healthErr))
+		lines = append(lines,
+			bad.Render("Observability checks could not complete"),
+			"Details: "+m.healthErr,
+			muted.Render("Check Config and the metrics path, then press r to retry."),
+		)
 		m.observabilityView.SetContent(strings.Join(lines, "\n"))
 		return m.observabilityView.View()
 	}
@@ -1075,7 +1101,12 @@ func (m model) viewSystemd(width int) string {
 
 	// ── Unit Status ───────────────────────────────────────────────────────
 	if m.systemdErr != "" {
-		lines = append(lines, bad.Render(m.systemdErr), "")
+		lines = append(lines,
+			bad.Render("Could not read user systemd status"),
+			"Details: "+m.systemdErr,
+			muted.Render("Check that user systemd is available for this account, then press r to retry."),
+			"",
+		)
 	}
 	if m.systemdLast != "" {
 		lines = append(lines, sectionTitle.Render("Last Result"), m.systemdLast, "")
@@ -1186,7 +1217,7 @@ func (m model) contextKeyHints() []string {
 	}
 	switch m.activeScreen {
 	case screenDashboard:
-		return []string{keyHint.Render("[j/k]") + " Scroll", keyHint.Render("[PgUp/PgDn]") + " Page", keyHint.Render("[?]") + " Help", keyHint.Render("[Tab]") + " Focus"}
+		return []string{keyHint.Render("[j/k]") + " Actions", keyHint.Render("[Enter]") + " Open", keyHint.Render("[?]") + " Help", keyHint.Render("[Tab]") + " Focus"}
 	case screenHealth:
 		return []string{keyHint.Render("[j/k]") + " Scroll", keyHint.Render("[PgUp/PgDn]") + " Page", keyHint.Render("[r]") + " Refresh", keyHint.Render("[?]") + " Help"}
 	case screenObservability:
@@ -1194,7 +1225,7 @@ func (m model) contextKeyHints() []string {
 	case screenConfig:
 		return []string{keyHint.Render("[/]") + " Search", keyHint.Render("[Enter]") + " Edit", keyHint.Render("[Ctrl+S]") + " Save", keyHint.Render("[v]") + " Reveal"}
 	case screenLogs:
-		return []string{keyHint.Render("[d]") + " Daily", keyHint.Render("[i]") + " Index", keyHint.Render("[/]") + " Filter", keyHint.Render("[f]") + " Follow"}
+		return []string{keyHint.Render("[d]") + " Daily", keyHint.Render("[i]") + " Index", keyHint.Render("[/]") + " Filter", keyHint.Render("[r]") + " Retry"}
 	case screenSchedule:
 		return []string{keyHint.Render("[Enter]") + " Edit", keyHint.Render("[a]") + " Apply", keyHint.Render("[c]") + " Clear Temp", keyHint.Render("[?]") + " Help"}
 	case screenSystemd:
@@ -1235,7 +1266,9 @@ func (m model) viewToastLine(toast toast) string {
 	switch toast.level {
 	case "ok":
 		badge = good.Render("[ ✔ OK ]")
-	case "error":
+	case "warn", "warning":
+		badge = warn.Render("[ ⚠ WRN ]")
+	case "error", "err":
 		badge = bad.Render("[ ✖ ERR ]")
 	}
 	return muted.Render(toast.at.Format("15:04:05")) + " │ " + badge + " " + toast.text

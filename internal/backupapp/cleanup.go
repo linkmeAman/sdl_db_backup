@@ -1,6 +1,7 @@
 package backupapp
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -15,8 +16,9 @@ func cleanupOldBackups(backupDir, currentRun string, cfg config) error {
 	}
 
 	type backup struct {
-		path string
-		time time.Time
+		path            string
+		time            time.Time
+		restoreVerified bool
 	}
 
 	var backups []backup
@@ -34,7 +36,7 @@ func cleanupOldBackups(backupDir, currentRun string, cfg config) error {
 		if currentRun != "" && path == currentRun {
 			continue
 		}
-		backups = append(backups, backup{path: path, time: runTime})
+		backups = append(backups, backup{path: path, time: runTime, restoreVerified: runHasSuccessfulRestoreValidation(path)})
 	}
 
 	// Sort backups from newest to oldest
@@ -91,6 +93,18 @@ func cleanupOldBackups(backupDir, currentRun string, cfg config) error {
 		}
 	}
 
+	// Always keep a small number of the newest successful sandbox restore tests.
+	// This avoids deleting the last locally proven recovery point solely because
+	// it falls outside the normal GFS time buckets.
+	verifiedKept := 0
+	for _, b := range backups {
+		if !b.restoreVerified || verifiedKept >= cfg.RetentionMinVerified {
+			continue
+		}
+		keep[b.path] = true
+		verifiedKept++
+	}
+
 	// Delete unkept
 	for _, b := range backups {
 		if !keep[b.path] {
@@ -102,4 +116,19 @@ func cleanupOldBackups(backupDir, currentRun string, cfg config) error {
 	}
 
 	return nil
+}
+
+func runHasSuccessfulRestoreValidation(runFolder string) bool {
+	data, err := os.ReadFile(filepath.Join(runFolder, "manifest.json"))
+	if err != nil {
+		return false
+	}
+	var record struct {
+		ValidationStatus string `json:"validation_status"`
+		ValidationMode   string `json:"validation_mode"`
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return false
+	}
+	return record.ValidationStatus == "success" && record.ValidationMode == "sandbox restore test"
 }

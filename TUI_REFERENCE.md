@@ -28,7 +28,8 @@ The shell treats the terminal as a strict grid: the sidebar keeps a fixed width,
 | [5] 📜 Logs          |                                                      |
 | [6] 🕘 History       |                                                      |
 | [7] 🩺 Health        |                                                      |
-| [8] 🛠 Systemd       |                                                      |
+| [8] 📈 Observability |                                                      |
+| [9] 🛠 Systemd       |                                                      |
 |                      |                                                      |
 | Env: .env            |                                                      |
 +----------------------+------------------------------------------------------+
@@ -87,18 +88,19 @@ Core components:
 | `5` | Logs | Daily log and run index viewer |
 | `6` | History | Previous runs from `backup-runs.jsonl` |
 | `7` | Health | Detailed health diagnostics, latest run, runtime metadata, scheduler guidance |
-| `8` | Systemd | User service/timer status, actions, and rendered unit previews |
+| `8` | Observability | Metrics collector status and parsed Prometheus values |
+| `9` | Systemd | User service/timer status, actions, and rendered unit previews |
 
 ## Global Controls
 
 | Key | Behavior |
 |---|---|
-| `1`-`8` | Jump to pages |
+| `1`-`9` | Jump to pages |
 | `Tab` | Move focus forward between sidebar and content |
 | `Shift+Tab` | Move focus backward between content and sidebar |
 | `Esc` | Return focus to sidebar, close search/palette/prompt, or go back in table selection |
-| `j` / `k` | Move down/up; scroll Dashboard, Health, and Systemd when content is focused |
-| Arrow keys | Move through lists and selectors; scroll Dashboard, Health, and Systemd when content is focused |
+| `j` / `k` | Move down/up; select Dashboard actions; scroll Health, Observability, and Systemd when content is focused |
+| Arrow keys | Move through lists and selectors; scroll Health, Observability, and Systemd when content is focused |
 | `Enter` | Activate selected row/action |
 | `:` | Open command palette |
 | `/` | Search/filter on supported pages |
@@ -119,7 +121,8 @@ The status bar shows keybindings for the currently focused panel.
 Examples:
 - Sidebar focused: `[j/k] Navigate  [Enter] Select  [:] Commands  [?] Help`
 - Scope table focused: `[Space] Toggle  [v] Range  [Ctrl+A] Select All  [Ctrl+X] Clear  [Esc] Back`
-- Dashboard/Health/Systemd content focused: `[j/k] Scroll  [PgUp/PgDn] Page  [Home/End] Jump  [Tab] Focus`
+- Dashboard content focused: `[j/k] Actions  [Enter] Open  [Tab] Focus`
+- Health/Observability/Systemd content focused: `[j/k] Scroll  [PgUp/PgDn] Page  [Home/End] Jump  [Tab] Focus`
 - Config focused: `[/] Search  [Enter] Edit  [Ctrl+S] Save  [v] Reveal`
 
 ## Notifications
@@ -238,7 +241,7 @@ b / 2  Manual backup workflow
 :      Command palette
 ```
 
-Dashboard is a scrollable content page. When the content pane has focus, `j/k`, arrow keys, `PgUp/PgDn`, and `Home/End` move the viewport instead of changing the selected page.
+Dashboard uses `j/k` or arrows to select a quick action, and `Enter` opens it. Health, Observability, and Systemd provide viewport scrolling for longer diagnostics.
 
 ## Backup Page
 
