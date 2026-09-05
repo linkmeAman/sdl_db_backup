@@ -37,6 +37,9 @@ const (
 )
 
 var s3EndpointForConfig = func(cfg config) string {
+	if cfg.S3Endpoint != "" {
+		return strings.TrimRight(cfg.S3Endpoint, "/") + "/" + url.PathEscape(cfg.S3Bucket)
+	}
 	return "https://" + cfg.S3Bucket + ".s3." + cfg.S3Region + ".amazonaws.com"
 }
 
@@ -360,6 +363,12 @@ func isRetriableS3Error(err error) bool {
 }
 
 func doS3Request(ctx context.Context, cfg config, method, objectKey string, query url.Values, body io.Reader, size int64, contentType, payloadHash string) (*http.Response, error) {
+	if cfg.S3Endpoint != "" {
+		u, err := url.Parse(cfg.S3Endpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(cfg.S3Endpoint, "#") {
+			return nil, errors.New("BACKUP_S3_ENDPOINT must be an HTTP(S) URL without credentials, query, or fragment")
+		}
+	}
 	endpoint := strings.TrimRight(s3EndpointForConfig(cfg), "/") + "/" + s3EscapeObjectKey(objectKey)
 	if query != nil {
 		endpoint += "?" + query.Encode()

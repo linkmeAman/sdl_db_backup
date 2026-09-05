@@ -197,6 +197,7 @@ control. The groups below cover the settings operators normally change.
 | `BACKUP_LOGICAL_S3_UPLOAD_ENABLED` | Enables logical remote upload. Defaults to `false`. |
 | `BACKUP_S3_UPLOAD_MODE` | `direct`, `auto`, `php`, or `http`. Use `direct` for recovery-grade uploads. |
 | `BACKUP_REQUIRE_REMOTE_COMPLETION` | Requires a direct remote completion marker. Defaults to `true`; legacy PHP/HTTP modes are not recovery-grade with this enabled. |
+| `BACKUP_S3_ENDPOINT` | Optional direct S3-compatible HTTP(S) endpoint; uses path-style bucket addressing. Empty uses AWS. |
 | `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION` | Destination bucket and region. |
 | `BACKUP_S3_KEY_ID`, `BACKUP_S3_KEY_SECRET` | S3 credentials (the standard AWS variable aliases are also accepted). |
 | `BACKUP_S3_LOGICAL_PREFIX` | Prefix for logical run folders. |
@@ -355,3 +356,9 @@ cleanup, validation, adaptive parallelism, and physical retry state.
 | [GRAFANA_BACKUP_MONITORING.md](GRAFANA_BACKUP_MONITORING.md) | Metrics, dashboards, PromQL, and alerts. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup and test expectations. |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting policy. |
+
+## Integration tests
+
+Run `./tests/integration/run.sh` with Docker and Compose v2 to test MySQL,
+PostgreSQL, encryption, MinIO completion markers, and isolated restores. See the
+[integration test guide](tests/integration/README.md) for coverage and diagnostics.

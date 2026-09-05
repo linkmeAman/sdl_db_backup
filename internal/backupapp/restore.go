@@ -783,11 +783,12 @@ func restoreTestCommand(ctx context.Context, cfg Config, engine string) func(...
 
 	return func(args ...string) *exec.Cmd {
 		cmdArgs := []string{"-h", cfg.RestoreTestHost, "-P", cfg.RestoreTestPort, "-u", cfg.RestoreTestUser}
-		if cfg.RestoreTestPass != "" {
-			cmdArgs = append(cmdArgs, "-p"+cfg.RestoreTestPass)
-		}
 		cmdArgs = append(cmdArgs, args...)
-		return exec.CommandContext(ctx, cfg.MySQLBin, cmdArgs...)
+		cmd := exec.CommandContext(ctx, cfg.MySQLBin, cmdArgs...)
+		// Match the backup client: command-line passwords emit a warning that
+		// pollutes CombinedOutput used for counts and sampled row hashes.
+		cmd.Env = append(os.Environ(), "MYSQL_PWD="+cfg.RestoreTestPass)
+		return cmd
 	}
 }
 

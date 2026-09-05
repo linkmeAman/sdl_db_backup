@@ -1,0 +1,12 @@
+**
+!go.mod
+!go.sum
+!main.go
+!internal/
+!internal/**
+!cmd/
+!cmd/sdl-db-backup-validate/
+!cmd/sdl-db-backup-validate/**
+!tests/
+!tests/integration/
+!tests/integration/suite.py

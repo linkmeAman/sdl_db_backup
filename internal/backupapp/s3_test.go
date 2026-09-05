@@ -154,3 +154,43 @@ func TestMultipartPartSizeKeepsPartCountWithinS3Limit(t *testing.T) {
 func testS3Config() config {
 	return config{S3Bucket: "bucket", S3Region: "ap-south-1", S3KeyID: "key", S3KeySecret: "secret"}
 }
+
+func TestCustomS3EndpointUsesSignedBucketPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/storage/test-bucket/logical/a%20b.sql.gz.enc" {
+			t.Errorf("unexpected path: %s", r.URL.EscapedPath())
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") {
+			t.Error("custom endpoint request is not signed")
+		}
+		w.Header().Set("Content-Length", "7")
+	}))
+	defer server.Close()
+	cfg := loadConfigFromValues(map[string]string{
+		"BACKUP_S3_ENDPOINT":   server.URL + "/storage/",
+		"BACKUP_S3_BUCKET":     "test-bucket",
+		"BACKUP_S3_KEY_ID":     "test-key",
+		"BACKUP_S3_KEY_SECRET": "test-secret",
+	})
+	if envMapFromConfig(cfg)["BACKUP_S3_ENDPOINT"] != cfg.S3Endpoint {
+		t.Fatal("custom endpoint lost during config round trip")
+	}
+	info, err := headS3Object(context.Background(), cfg, "logical/a b.sql.gz.enc")
+	if err != nil || info.SizeBytes != 7 {
+		t.Fatalf("head custom endpoint: info=%+v err=%v", info, err)
+	}
+	if got := s3EndpointForConfig(config{S3Bucket: "bucket", S3Region: "us-east-1"}); got != "https://bucket.s3.us-east-1.amazonaws.com" {
+		t.Fatalf("default AWS endpoint changed: %s", got)
+	}
+}
+
+func TestCustomS3EndpointRejectsInvalidURLs(t *testing.T) {
+	for _, endpoint := range []string{"minio:9000", "file:///tmp/bucket", "http://user:pass@minio", "http://minio?x=y", "http://minio?", "http://minio#fragment", "http://minio#"} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, err := doS3Request(context.Background(), config{S3Endpoint: endpoint}, http.MethodHead, "key", nil, nil, 0, "", "")
+			if err == nil || !strings.Contains(err.Error(), "BACKUP_S3_ENDPOINT") {
+				t.Fatalf("invalid endpoint accepted: %v", err)
+			}
+		})
+	}
+}

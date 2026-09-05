@@ -13,3 +13,5 @@
 
 backups/*
 configs/
+# Disposable container integration test output
+tests/integration/results/
