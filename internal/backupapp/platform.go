@@ -223,7 +223,7 @@ func MaskedConfigView(cfg Config) map[string]interface{} {
 	masked := make(map[string]interface{}, len(values))
 	for key, value := range values {
 		switch key {
-		case "DB_PASS", "BACKUP_S3_KEY_ID", "BACKUP_S3_KEY_SECRET", "BACKUP_XTRABACKUP_PASS", "BACKUP_API_BEARER_TOKEN":
+		case "DB_PASS", "RESTORE_TEST_PASS", "BACKUP_S3_KEY_ID", "BACKUP_S3_KEY_SECRET", "BACKUP_XTRABACKUP_PASS", "BACKUP_API_BEARER_TOKEN":
 			if strings.TrimSpace(value) == "" {
 				masked[key] = ""
 			} else {
