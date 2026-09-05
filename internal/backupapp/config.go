@@ -616,6 +616,12 @@ func managedEnvKeys() []string {
 		"BACKUP_METRICS_SERVICE",
 		"BACKUP_METRICS_ENV",
 		"BACKUP_METRICS_REGION",
+		"BACKUP_ALLOW_ROOT_RUNNER",
+		"RESTORE_TEST_ENABLED",
+		"RESTORE_TEST_HOST",
+		"RESTORE_TEST_PORT",
+		"RESTORE_TEST_USER",
+		"RESTORE_TEST_PASS",
 	}
 }
 
@@ -700,7 +706,7 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"RESTORE_TEST_HOST":                   cfg.RestoreTestHost,
 		"RESTORE_TEST_PORT":                   cfg.RestoreTestPort,
 		"RESTORE_TEST_USER":                   cfg.RestoreTestUser,
-		"RESTORE_TEST_PASS":                   "***",
+		"RESTORE_TEST_PASS":                   cfg.RestoreTestPass,
 	}
 	return values
 }

@@ -764,3 +764,80 @@ func TestScanOwnershipDriftFindsMismatchedNestedEntries(t *testing.T) {
 		t.Fatalf("unexpected formatted drift summary: %s", formatted)
 	}
 }
+
+func TestEffectiveConfigReadsContainerRootAndRestoreEnvironment(t *testing.T) {
+	for _, engine := range []string{"mysql", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			dir := t.TempDir()
+			envPath := filepath.Join(dir, ".env")
+			if err := os.WriteFile(envPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			port, user := "3306", "root"
+			if engine == "postgres" {
+				port, user = "5432", "postgres"
+			}
+			values := map[string]string{
+				"DB_ENGINE": engine, "BACKUP_LOG_DIR": dir,
+				"BACKUP_ALLOW_ROOT_RUNNER": "true",
+				"RESTORE_TEST_ENABLED":     "true",
+				"RESTORE_TEST_HOST":        engine + "-restore",
+				"RESTORE_TEST_PORT":        port,
+				"RESTORE_TEST_USER":        user,
+				"RESTORE_TEST_PASS":        "integration-only-password",
+			}
+			for key, value := range values {
+				t.Setenv(key, value)
+			}
+			cfg, err := LoadEffectiveConfig(envPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := envMapFromConfig(cfg)
+			for key, expected := range values {
+				if actual[key] != expected {
+					t.Errorf("process environment setting %s was not applied", key)
+				}
+			}
+			if shouldBlockScheduledRootRun("root", "runner", cfg.AllowRootRunner) {
+				t.Fatal("explicit container opt-in must allow the root runner")
+			}
+		})
+	}
+}
+
+func TestEffectiveConfigProcessCanDisableRootAndRestore(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("BACKUP_ALLOW_ROOT_RUNNER=true\nRESTORE_TEST_ENABLED=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BACKUP_LOG_DIR", dir)
+	t.Setenv("BACKUP_ALLOW_ROOT_RUNNER", "false")
+	t.Setenv("RESTORE_TEST_ENABLED", "false")
+	cfg, err := LoadEffectiveConfig(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !shouldBlockScheduledRootRun("root", "runner", cfg.AllowRootRunner) || cfg.RestoreTestEnabled {
+		t.Fatal("explicit process opt-out must override enabled file settings")
+	}
+}
+
+func TestRestorePasswordSurvivesConfigSaveAndIsMaskedForDisplay(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	cfg := loadConfigFromValues(map[string]string{"RESTORE_TEST_PASS": "restore test password"})
+	if err := SaveConfig(envPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RestoreTestPass != cfg.RestoreTestPass {
+		t.Fatal("saving configuration must preserve the restore password")
+	}
+	if MaskedConfigView(loaded)["RESTORE_TEST_PASS"] != "********" {
+		t.Fatal("configuration display must mask the restore password")
+	}
+}
