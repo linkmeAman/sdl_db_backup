@@ -416,3 +416,25 @@ func writeTestGzipSQLWithContents(path string, contents string) error {
 	}
 	return os.WriteFile(path, buf.Bytes(), 0o640)
 }
+
+func TestMySQLRestorePasswordDoesNotPolluteQueryOutput(t *testing.T) {
+	// MySQL warns on stderr for -p<password>. Restore queries use CombinedOutput,
+	// so that warning breaks numeric parsing and differs from source row hashes.
+	t.Setenv("MYSQL_PWD", "unrelated-source-password")
+	for _, password := range []string{"restore_secret", ""} {
+		command := restoreTestCommand(context.Background(), Config{
+			MySQLBin: "mysql", RestoreTestHost: "restore.internal",
+			RestoreTestPort: "3306", RestoreTestUser: "restore_user",
+			RestoreTestPass: password,
+		}, "mysql")
+		cmd := command("-N", "-e", "SELECT 1")
+		for _, arg := range cmd.Args {
+			if strings.HasPrefix(arg, "-p") || strings.Contains(arg, "restore_secret") {
+				t.Fatalf("password leaked into arguments: %v", cmd.Args)
+			}
+		}
+		if !containsString(cmd.Environ(), "MYSQL_PWD="+password) {
+			t.Fatal("restore password must override the inherited source password")
+		}
+	}
+}

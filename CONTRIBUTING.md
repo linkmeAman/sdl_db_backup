@@ -39,6 +39,11 @@ Before submitting a Pull Request, please ensure all tests pass:
 go test ./internal/... ./cmd/...
 ```
 
+For the containerized end-to-end suite, run `./tests/integration/run.sh`.
+It requires a running Docker daemon and Compose v2; see
+[tests/integration/README.md](tests/integration/README.md). CI runs it separately
+from the Go tests and uploads diagnostics on failure.
+
 If you are modifying the TUI, ensure you have not broken the scroll or keybinding logic in `internal/tui/app_test.go`.
 
 ## Submitting a Pull Request

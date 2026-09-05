@@ -69,6 +69,7 @@ type config struct {
 	S3PhysicalPrefix          string
 	S3Bucket                  string
 	S3Region                  string
+	S3Endpoint                string
 	S3KeyID                   string
 	S3KeySecret               string
 	XbcloudBin                string
@@ -356,6 +357,7 @@ func loadConfigFromValues(values map[string]string) config {
 		S3PhysicalPrefix:          getMapValue(values, "BACKUP_S3_PHYSICAL_PREFIX", "physical"),
 		S3Bucket:                  getMapValue(values, "BACKUP_S3_BUCKET", ""),
 		S3Region:                  getMapValue(values, "BACKUP_S3_REGION", "us-east-1"),
+		S3Endpoint:                getMapValue(values, "BACKUP_S3_ENDPOINT", ""),
 		S3KeyID:                   s3KeyID,
 		S3KeySecret:               s3KeySecret,
 		EncryptionKey:             getMapValue(values, "BACKUP_ENCRYPTION_KEY", ""),
@@ -590,6 +592,7 @@ func managedEnvKeys() []string {
 		"BACKUP_S3_UPLOAD_SCRIPT",
 		"BACKUP_S3_BUCKET",
 		"BACKUP_S3_REGION",
+		"BACKUP_S3_ENDPOINT",
 		"BACKUP_S3_LOGICAL_PREFIX",
 		"BACKUP_S3_PHYSICAL_PREFIX",
 		"BACKUP_S3_KEY_ID",
@@ -668,6 +671,7 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_S3_UPLOAD_SCRIPT":             cfg.S3UploadScript,
 		"BACKUP_S3_BUCKET":                    cfg.S3Bucket,
 		"BACKUP_S3_REGION":                    cfg.S3Region,
+		"BACKUP_S3_ENDPOINT":                  cfg.S3Endpoint,
 		"BACKUP_S3_LOGICAL_PREFIX":            cfg.S3LogicalPrefix,
 		"BACKUP_S3_PHYSICAL_PREFIX":           cfg.S3PhysicalPrefix,
 		"BACKUP_S3_KEY_ID":                    cfg.S3KeyID,
