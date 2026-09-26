@@ -194,3 +194,40 @@ func TestCustomS3EndpointRejectsInvalidURLs(t *testing.T) {
 		})
 	}
 }
+
+func TestListS3Prefix(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") != "2" {
+			t.Errorf("expected list-type=2, got %q", r.URL.Query().Get("list-type"))
+		}
+		if r.URL.Query().Get("prefix") != "backup-as-it-is/run-1/physical.xbstream/" {
+			t.Errorf("expected trailing slash in prefix, got %q", r.URL.Query().Get("prefix"))
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		xml := `<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+			<Contents><Key>backup-as-it-is/run-1/physical.xbstream/chunk1</Key><Size>1024</Size></Contents>
+			<Contents><Key>backup-as-it-is/run-1/physical.xbstream/chunk2</Key><Size>2048</Size></Contents>
+		</ListBucketResult>`
+		w.Write([]byte(xml))
+	}))
+	defer server.Close()
+
+	cfg := loadConfigFromValues(map[string]string{
+		"BACKUP_S3_ENDPOINT":   server.URL + "/storage/",
+		"BACKUP_S3_BUCKET":     "test-bucket",
+		"BACKUP_S3_KEY_ID":     "test-key",
+		"BACKUP_S3_KEY_SECRET": "test-secret",
+	})
+
+	info, err := listS3Prefix(context.Background(), cfg, "backup-as-it-is/run-1/physical.xbstream")
+	if err != nil {
+		t.Fatalf("listS3Prefix error: %v", err)
+	}
+	if info.ObjectCount != 2 {
+		t.Fatalf("expected 2 objects, got %d", info.ObjectCount)
+	}
+	if info.TotalBytes != 3072 {
+		t.Fatalf("expected 3072 bytes, got %d", info.TotalBytes)
+	}
+}
+

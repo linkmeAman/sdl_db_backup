@@ -307,6 +307,64 @@ func headS3Object(ctx context.Context, cfg config, objectKey string) (s3ObjectIn
 	return remote, err
 }
 
+// s3PrefixInfo summarises objects found under a given S3 key prefix.
+type s3PrefixInfo struct {
+	ObjectCount int64
+	TotalBytes  int64
+}
+
+// listS3Prefix lists objects whose key begins with prefix (plus a trailing "/").
+// It performs a single ListObjectsV2 request with max-keys=1000 and returns
+// aggregate count and total byte size. A non-zero ObjectCount confirms the
+// prefix has at least one uploaded object.
+func listS3Prefix(ctx context.Context, cfg config, prefix string) (s3PrefixInfo, error) {
+	// Ensure the prefix always ends with "/" so we don't accidentally match
+	// sibling keys that share a common name root (e.g. physical.xbstream vs
+	// physical.xbstream2).
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	type listContents struct {
+		Key  string `xml:"Key"`
+		Size int64  `xml:"Size"`
+	}
+	type listResult struct {
+		Contents []listContents `xml:"Contents"`
+	}
+
+	emptyHash := sha256.Sum256(nil)
+	payloadHash := hex.EncodeToString(emptyHash[:])
+
+	query := url.Values{
+		"list-type": {"2"},
+		"prefix":    {prefix},
+		"max-keys":  {"1000"},
+	}
+
+	var info s3PrefixInfo
+	err := withS3Retry(ctx, func() error {
+		resp, err := doS3Request(ctx, cfg, http.MethodGet, "", query, nil, 0, "application/xml", payloadHash)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if err := checkS3Success(resp, "list prefix "+prefix); err != nil {
+			return err
+		}
+		var result listResult
+		if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return fmt.Errorf("decode list prefix response: %w", err)
+		}
+		info.ObjectCount = int64(len(result.Contents))
+		for _, c := range result.Contents {
+			info.TotalBytes += c.Size
+		}
+		return nil
+	})
+	return info, err
+}
+
 type s3HTTPStatusError struct {
 	operation string
 	status    int
