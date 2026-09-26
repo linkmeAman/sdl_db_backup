@@ -475,25 +475,34 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 
-	remote, err := headS3Object(ctx, cfg, objectKey)
+	// xbcloud stores the backup stream as many small objects under the key as a
+	// virtual directory prefix (e.g. <objectKey>/ibdata1.00000000000000000001).
+	// A HEAD request on the prefix itself always returns 404.  Use ListObjectsV2
+	// to confirm that at least one object was committed under the prefix.
+	prefixInfo, err := listS3Prefix(ctx, cfg, objectKey)
 	if err != nil {
 		result.Error = fmt.Sprintf("physical backup remote verification failed: %v", err)
 		log.Printf("physical backup: %s", result.Error)
 		return result
 	}
-	if remote.SizeBytes <= 0 {
-		result.Error = "physical backup remote verification failed: streamed object is empty"
+	if prefixInfo.ObjectCount == 0 {
+		result.Error = "physical backup remote verification failed: no objects found under prefix"
 		log.Printf("physical backup: %s", result.Error)
 		return result
 	}
+	if prefixInfo.TotalBytes <= 0 {
+		result.Error = "physical backup remote verification failed: objects under prefix have zero total size"
+		log.Printf("physical backup: %s", result.Error)
+		return result
+	}
+	log.Printf("physical backup: remote prefix verified: objects=%d total_bytes=%d", prefixInfo.ObjectCount, prefixInfo.TotalBytes)
 	completion := physicalCompletionManifest{
 		FormatVersion: 1,
 		CompletedAt:   time.Now().UTC(),
 		RunID:         runID,
 		Bucket:        cfg.S3Bucket,
 		ObjectKey:     objectKey,
-		SizeBytes:     remote.SizeBytes,
-		ETag:          remote.ETag,
+		SizeBytes:     prefixInfo.TotalBytes,
 	}
 	completionData, err := json.MarshalIndent(completion, "", "  ")
 	if err != nil {
@@ -519,8 +528,7 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 	result.Status = "success"
-	result.RemoteSizeBytes = remote.SizeBytes
-	result.RemoteETag = remote.ETag
+	result.RemoteSizeBytes = prefixInfo.TotalBytes
 	result.CompletionObject = fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, completionKey)
 	log.Printf("physical backup: completed successfully target=%s duration=%s", result.TargetDir, result.Duration)
 	return result
