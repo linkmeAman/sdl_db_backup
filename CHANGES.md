@@ -1,6 +1,26 @@
 # SDL DB Backup Change Log
 
-## Current implementation
+## October 12, 2026 — production backup reliability
+
+- Capture all required MySQL databases in one transaction when `global` mode
+  is selected; require InnoDB, a backup lock and complete object inventories.
+- Introduce version 2 run states and fail-closed artifact verification. Five
+  of six databases cannot publish `COMPLETED.json`.
+- Verify every S3 payload and paginated physical chunk inventory; use bounded
+  transient retries and persist multipart ownership journals.
+- Freeze committed manifests and preserve later execution bookkeeping separately.
+- Add capacity preflight, a streaming safety reserve and labelled failed artifacts.
+- Hold deletion by default; protect complete coverage and journal quarantine.
+- Target the authoritative systemd manager, show desired/effective schedule drift,
+  and explicitly apply calendars with validation and rollback.
+- Preserve settings-file ownership during atomic replacement and expose live
+  capacity metrics through the existing monitoring integration.
+- The approved missing-view-definer correction restored capture of all six
+  databases. The automatic 18:00 run and its full local/S3 hashes were verified.
+  Restore testing remains disabled; recovery readiness is not claimed.
+- Current production settings: [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md).
+
+## Earlier implementation
 
 This repository is no longer a single-script MySQL dump utility. The current
 implementation uses a shared Go backup engine with non-interactive, terminal

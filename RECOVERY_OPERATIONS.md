@@ -4,6 +4,16 @@ This runbook defines the operational controls that must accompany the backup
 application. Do not treat a successful backup process as a disaster-recovery
 guarantee until these controls are configured and rehearsed.
 
+## Current production scope
+
+As of October 12, 2026, all six databases have passed shared-transaction capture
+and independent local/S3 integrity verification. Restore testing is disabled
+by operator instruction; no restore was run. Recovery readiness and RTO remain
+unverified. Current settings and evidence are in
+[PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md). The procedures below
+require a separately authorized, isolated recovery exercise. The existing
+per-database restore tool rejects global `all-databases.sql.gz` bundles.
+
 ## Physical restore drill
 
 Run physical validation on a dedicated verification host with the same major
@@ -66,8 +76,15 @@ enabled automatically by the application:
 - least-privilege write credentials for the backup host and separate read-only
   credentials for restore drills.
 
-Restore automation must accept only logical prefixes containing `COMPLETED.json`
-and physical prefixes containing `PHYSICAL_COMPLETED.json`.
+Recovery selection must verify marker status, manifest requirements, complete
+artifact inventory, sizes and checksums. `COMPLETED.json` or
+`PHYSICAL_COMPLETED.json` presence alone is insufficient, especially for legacy
+markers. Physical preparation and startup require separate evidence.
+
+Automatic local deletion is held. `go run ./main.go retention-plan` explains
+coverage without modifying artifacts. Authorized cleanup quarantines reviewed
+candidates; it never automatically purges them. Preserve backup dependencies
+and authorize any deletion separately.
 
 ## Release gate
 

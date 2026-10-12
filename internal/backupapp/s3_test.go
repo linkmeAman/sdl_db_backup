@@ -230,4 +230,3 @@ func TestListS3Prefix(t *testing.T) {
 		t.Fatalf("expected 3072 bytes, got %d", info.TotalBytes)
 	}
 }
-

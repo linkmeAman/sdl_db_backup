@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"mime"
 	"net"
 	"net/http"
@@ -44,7 +45,8 @@ var s3EndpointForConfig = func(cfg config) string {
 }
 
 var s3RequestRetryDelay = func(attempt int) time.Duration {
-	return time.Duration(1<<(attempt-1)) * 250 * time.Millisecond
+	base := time.Duration(1<<(attempt-1)) * 250 * time.Millisecond
+	return base/2 + time.Duration(rand.Int64N(int64(base)))
 }
 
 type remoteArtifact struct {
@@ -55,12 +57,15 @@ type remoteArtifact struct {
 }
 
 type logicalCompletionManifest struct {
-	FormatVersion int              `json:"format_version"`
-	CompletedAt   time.Time        `json:"completed_at"`
-	RunID         string           `json:"run_id"`
-	Bucket        string           `json:"bucket"`
-	Prefix        string           `json:"prefix"`
-	Artifacts     []remoteArtifact `json:"artifacts"`
+	Status            string           `json:"status"`
+	ConsistencyMethod string           `json:"consistency_method,omitempty"`
+	ExpectedDatabases []string         `json:"expected_databases,omitempty"`
+	FormatVersion     int              `json:"format_version"`
+	CompletedAt       time.Time        `json:"completed_at"`
+	RunID             string           `json:"run_id"`
+	Bucket            string           `json:"bucket"`
+	Prefix            string           `json:"prefix"`
+	Artifacts         []remoteArtifact `json:"artifacts"`
 }
 
 func logS3Result(result map[string]interface{}) {
@@ -78,6 +83,18 @@ func logS3Result(result map[string]interface{}) {
 
 func uploadBackupToS3(cfg config, runFolder string) error {
 	log.Printf("s3 upload: starting for folder %s", runFolder)
+	if !verifiedUploadMode(cfg) {
+		if cfg.RequireRemoteCompletion {
+			return fmt.Errorf("remote completion requires the verified direct upload path; legacy helpers cannot prove full completion")
+		}
+		capture, e := readManifest(runFolder)
+		if e != nil {
+			return e
+		}
+		if e = verifyLogicalCapture(cfg, capture, runFolder); e != nil {
+			return fmt.Errorf("partial captures must not be sent to unverifiable legacy helpers: %w", e)
+		}
+	}
 	switch cfg.S3UploadMode {
 	case "", "direct":
 		if err := uploadBackupDirectToS3(cfg, runFolder); err != nil {
@@ -144,6 +161,14 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.S3UploadTimeout)
 	defer cancel()
+	if _, e := headS3Object(ctx, cfg, baseKey+"/"+logicalCompletionObject); e == nil {
+		return fmt.Errorf("refusing to overwrite finalized recovery point %s", runID)
+	} else {
+		var statusErr *s3HTTPStatusError
+		if !errors.As(e, &statusErr) || statusErr.status != 404 {
+			return fmt.Errorf("check immutable recovery point: %w", e)
+		}
+	}
 
 	type localArtifact struct {
 		path string
@@ -151,6 +176,17 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 		size int64
 	}
 	localArtifacts := []localArtifact{}
+	capture, manifestErr := readManifest(runFolder)
+	if manifestErr != nil {
+		return fmt.Errorf("required capture manifest: %w", manifestErr)
+	}
+	captureErr := verifyLogicalCapture(cfg, capture, runFolder)
+	allowed := map[string]bool{"manifest.json": true}
+	for _, d := range capture.Results {
+		if d.Status == "success" {
+			allowed[filepath.Base(d.OutputPath)] = true
+		}
+	}
 	err := filepath.WalkDir(runFolder, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -166,7 +202,7 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 		if err != nil {
 			return err
 		}
-		if filepath.ToSlash(rel) == logicalCompletionObject {
+		if !allowed[filepath.ToSlash(rel)] {
 			return nil
 		}
 		localArtifacts = append(localArtifacts, localArtifact{path: path, rel: filepath.ToSlash(rel), size: info.Size()})
@@ -188,13 +224,66 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 		if err != nil {
 			return err
 		}
+		if err := verifyRemotePayload(ctx, cfg, key, artifact.size, remote.SHA256); err != nil {
+			return err
+		}
 		artifacts = append(artifacts, remoteArtifact{Key: artifact.rel, SizeBytes: artifact.size, SHA256: remote.SHA256, ETag: remote.ETag})
 		uploadedBytes += artifact.size
 		log.Printf("s3 upload: uploaded and verified %s to s3://%s/%s", artifact.rel, cfg.S3Bucket, key)
 	}
 
+	// Publish the manifest with verified remote-transfer evidence before the
+	// final marker. No marker exists until this final inventory is verified.
+	markLogicalUploadSuccess(&capture)
+	capture.Duration = time.Since(capture.Timestamp).Round(time.Millisecond).String()
+	setManifestMetadata(cfg, &capture)
+	if err := writeManifest(runFolder, capture); err != nil {
+		return err
+	}
+	manifestPath := filepath.Join(runFolder, "manifest.json")
+	stat, err := os.Stat(manifestPath)
+	if err != nil {
+		return err
+	}
+	manifestRemote, err := uploadFileDirectToS3(ctx, cfg, manifestPath, baseKey+"/manifest.json", stat.Size())
+	if err != nil {
+		return err
+	}
+	if err := verifyRemotePayload(ctx, cfg, baseKey+"/manifest.json", stat.Size(), manifestRemote.SHA256); err != nil {
+		return err
+	}
+	for i := range artifacts {
+		if artifacts[i].Key == "manifest.json" {
+			artifacts[i] = remoteArtifact{Key: "manifest.json", SizeBytes: stat.Size(), SHA256: manifestRemote.SHA256, ETag: manifestRemote.ETag}
+		}
+	}
+	inventory, err := listS3Prefix(ctx, cfg, baseKey)
+	if err != nil {
+		return err
+	}
+	actual := map[string]int64{}
+	for _, o := range inventory.Objects {
+		actual[strings.TrimPrefix(o.Key, baseKey+"/")] = o.SizeBytes
+	}
+	for _, a := range artifacts {
+		if actual[a.Key] != a.SizeBytes {
+			return fmt.Errorf("remote inventory missing or mismatched artifact %s", a.Key)
+		}
+	}
+	marker := logicalCompletionObject
+	status := "COMPLETE"
+	if captureErr != nil {
+		marker = "PARTIAL.json"
+		status = "PARTIAL"
+		if capture.DatabasesSucceeded == 0 {
+			marker = "FAILED.json"
+			status = "FAILED"
+		}
+		log.Printf("logical completion withheld: %v", captureErr)
+	}
 	completion := logicalCompletionManifest{
-		FormatVersion: 1,
+		Status: status, ConsistencyMethod: capture.ConsistencyMethod, ExpectedDatabases: capture.ExpectedDatabases,
+		FormatVersion: 2,
 		CompletedAt:   time.Now().UTC(),
 		RunID:         runID,
 		Bucket:        cfg.S3Bucket,
@@ -206,7 +295,7 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 		return fmt.Errorf("encode logical completion manifest: %w", err)
 	}
 	completionBody = append(completionBody, '\n')
-	completionKey := baseKey + "/" + logicalCompletionObject
+	completionKey := baseKey + "/" + marker
 	completionHash := sha256.Sum256(completionBody)
 	if _, err := putS3Object(ctx, cfg, completionKey, bytes.NewReader(completionBody), int64(len(completionBody)), "application/json", hex.EncodeToString(completionHash[:])); err != nil {
 		return fmt.Errorf("write logical completion manifest: %w", err)
@@ -218,7 +307,10 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 	if completionRemote.SizeBytes != int64(len(completionBody)) {
 		return fmt.Errorf("verify logical completion manifest: expected %d bytes, got %d", len(completionBody), completionRemote.SizeBytes)
 	}
-	log.Printf("s3 upload committed: artifacts=%d bytes=%d completion=s3://%s/%s", len(artifacts), uploadedBytes, cfg.S3Bucket, completionKey)
+	if err := persistManifestCommit(runFolder, capture.RunID, manifestRemote.SHA256); err != nil {
+		return fmt.Errorf("persist manifest commit evidence: %w", err)
+	}
+	log.Printf("s3 upload committed: artifacts=%d bytes=%d status=%s completion=s3://%s/%s", len(artifacts), uploadedBytes, status, cfg.S3Bucket, completionKey)
 	return nil
 }
 
@@ -311,6 +403,7 @@ func headS3Object(ctx context.Context, cfg config, objectKey string) (s3ObjectIn
 type s3PrefixInfo struct {
 	ObjectCount int64
 	TotalBytes  int64
+	Objects     []remoteArtifact
 }
 
 // listS3Prefix lists objects whose key begins with prefix (plus a trailing "/").
@@ -318,51 +411,87 @@ type s3PrefixInfo struct {
 // aggregate count and total byte size. A non-zero ObjectCount confirms the
 // prefix has at least one uploaded object.
 func listS3Prefix(ctx context.Context, cfg config, prefix string) (s3PrefixInfo, error) {
-	// Ensure the prefix always ends with "/" so we don't accidentally match
-	// sibling keys that share a common name root (e.g. physical.xbstream vs
-	// physical.xbstream2).
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-
-	type listContents struct {
-		Key  string `xml:"Key"`
-		Size int64  `xml:"Size"`
-	}
-	type listResult struct {
-		Contents []listContents `xml:"Contents"`
-	}
-
-	emptyHash := sha256.Sum256(nil)
-	payloadHash := hex.EncodeToString(emptyHash[:])
-
-	query := url.Values{
-		"list-type": {"2"},
-		"prefix":    {prefix},
-		"max-keys":  {"1000"},
-	}
-
 	var info s3PrefixInfo
-	err := withS3Retry(ctx, func() error {
-		resp, err := doS3Request(ctx, cfg, http.MethodGet, "", query, nil, 0, "application/xml", payloadHash)
+	token := ""
+	seenTokens := map[string]bool{}
+	seen := map[string]bool{}
+	for {
+		query := url.Values{"list-type": {"2"}, "prefix": {prefix}, "max-keys": {"1000"}}
+		if token != "" {
+			query.Set("continuation-token", token)
+		}
+		var page struct {
+			Truncated bool   `xml:"IsTruncated"`
+			Next      string `xml:"NextContinuationToken"`
+			Contents  []struct {
+				Key  string `xml:"Key"`
+				Size int64  `xml:"Size"`
+			} `xml:"Contents"`
+		}
+		empty := sha256.Sum256(nil)
+		err := withS3Retry(ctx, func() error {
+			resp, e := doS3Request(ctx, cfg, http.MethodGet, "", query, nil, 0, "application/xml", hex.EncodeToString(empty[:]))
+			if e != nil {
+				return e
+			}
+			defer resp.Body.Close()
+			if e = checkS3Success(resp, "list prefix "+prefix); e != nil {
+				return e
+			}
+			page.Contents = nil
+			page.Truncated = false
+			page.Next = ""
+			return xml.NewDecoder(resp.Body).Decode(&page)
+		})
 		if err != nil {
-			return err
+			return info, err
+		}
+		for _, obj := range page.Contents {
+			if !strings.HasPrefix(obj.Key, prefix) || obj.Size < 0 || seen[obj.Key] {
+				return info, fmt.Errorf("invalid or duplicate S3 inventory object")
+			}
+			seen[obj.Key] = true
+			info.ObjectCount++
+			info.TotalBytes += obj.Size
+			info.Objects = append(info.Objects, remoteArtifact{Key: obj.Key, SizeBytes: obj.Size})
+		}
+		if !page.Truncated {
+			return info, nil
+		}
+		if page.Next == "" || page.Next == token || seenTokens[page.Next] {
+			return info, fmt.Errorf("truncated S3 inventory omitted a progressing continuation token")
+		}
+		seenTokens[page.Next] = true
+		token = page.Next
+	}
+}
+
+// Independent streamed GET comparison verifies the actual payload, including
+// multipart objects. ETags are opaque identifiers, never full-file MD5 hashes.
+func verifyRemotePayload(ctx context.Context, cfg config, key string, size int64, expected string) error {
+	empty := sha256.Sum256(nil)
+	return withS3Retry(ctx, func() error {
+		resp, e := doS3Request(ctx, cfg, http.MethodGet, key, nil, nil, 0, "application/octet-stream", hex.EncodeToString(empty[:]))
+		if e != nil {
+			return e
 		}
 		defer resp.Body.Close()
-		if err := checkS3Success(resp, "list prefix "+prefix); err != nil {
-			return err
+		if e = checkS3Success(resp, "verify payload "+key); e != nil {
+			return e
 		}
-		var result listResult
-		if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return fmt.Errorf("decode list prefix response: %w", err)
+		h := sha256.New()
+		n, e := io.Copy(h, resp.Body)
+		if e != nil {
+			return e
 		}
-		info.ObjectCount = int64(len(result.Contents))
-		for _, c := range result.Contents {
-			info.TotalBytes += c.Size
+		if n != size || hex.EncodeToString(h.Sum(nil)) != expected {
+			return fmt.Errorf("S3 payload size/checksum mismatch for %s", key)
 		}
 		return nil
 	})
-	return info, err
 }
 
 type s3HTTPStatusError struct {
@@ -375,7 +504,12 @@ func (e *s3HTTPStatusError) Error() string {
 	if e.body == "" {
 		return fmt.Sprintf("%s failed: status=%d", e.operation, e.status)
 	}
-	return fmt.Sprintf("%s failed: status=%d body=%s", e.operation, e.status, e.body)
+	var detail struct {
+		Code      string `xml:"Code"`
+		RequestID string `xml:"RequestId"`
+	}
+	_ = xml.Unmarshal([]byte(e.body), &detail)
+	return fmt.Sprintf("%s failed: status=%d code=%s request_id=%s", e.operation, e.status, detail.Code, detail.RequestID)
 }
 
 func checkS3Success(resp *http.Response, operation string) error {
@@ -411,7 +545,11 @@ func withS3Retry(ctx context.Context, operation func() error) error {
 func isRetriableS3Error(err error) bool {
 	var statusErr *s3HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return statusErr.status == http.StatusTooManyRequests || statusErr.status >= 500
+		var response struct {
+			Code string `xml:"Code"`
+		}
+		_ = xml.Unmarshal([]byte(statusErr.body), &response)
+		return statusErr.status == 408 || statusErr.status == http.StatusTooManyRequests || statusErr.status >= 500 || response.Code == "RequestTimeout" || response.Code == "SlowDown" || response.Code == "InternalError"
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -459,9 +597,19 @@ type multipartCompleteRequest struct {
 }
 
 func uploadFileMultipartToS3(ctx context.Context, cfg config, file *os.File, objectKey string, size int64, contentType string) (resultErr error) {
+	journalPath := file.Name() + ".multipart.json"
+	if err := recoverMultipartJournal(ctx, cfg, journalPath, objectKey); err != nil {
+		return err
+	}
 	uploadID, err := initiateS3MultipartUpload(ctx, cfg, objectKey, contentType)
 	if err != nil {
 		return fmt.Errorf("initiate multipart upload %s: %w", objectKey, err)
+	}
+	if err := saveMultipartJournal(journalPath, cfg, objectKey, uploadID); err != nil {
+		abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = abortS3MultipartUpload(abortCtx, cfg, objectKey, uploadID)
+		return err
 	}
 	completed := false
 	defer func() {
@@ -471,7 +619,9 @@ func uploadFileMultipartToS3(ctx context.Context, cfg config, file *os.File, obj
 		abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := abortS3MultipartUpload(abortCtx, cfg, objectKey, uploadID); err != nil {
-			log.Printf("s3 upload: could not abort incomplete multipart upload %s (upload_id=%s): %v", objectKey, uploadID, err)
+			log.Printf("s3 upload: could not abort incomplete multipart upload %s: %v; recovery journal preserved", objectKey, err)
+		} else {
+			_ = os.Remove(journalPath)
 		}
 	}()
 
@@ -503,7 +653,7 @@ func uploadFileMultipartToS3(ctx context.Context, cfg config, file *os.File, obj
 		return fmt.Errorf("complete multipart upload %s: %w", objectKey, err)
 	}
 	completed = true
-	return nil
+	return os.Remove(journalPath)
 }
 
 func multipartPartSize(size int64) int64 {
@@ -749,3 +899,13 @@ func uploadBackupViaHTTP(cfg config, runFolder string) error {
 // runXtrabackupCmd runs xtrabackup with the given args, streaming its stderr
 // to the logger line by line. If runAsUser is set, it executes via
 // "sudo -n -u <runAsUser>" so xtrabackup can read protected MySQL datadirs.
+
+func verifiedUploadMode(cfg config) bool {
+	switch cfg.S3UploadMode {
+	case "", "direct":
+		return true
+	case "auto":
+		return cfg.S3Bucket != "" && cfg.S3KeyID != "" && cfg.S3KeySecret != ""
+	}
+	return false
+}

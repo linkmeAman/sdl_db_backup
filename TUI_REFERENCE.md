@@ -578,7 +578,12 @@ Health is a scrollable content page. When the content pane has focus, `j/k`, arr
 
 ## Systemd Page
 
-Purpose: inspect and run user systemd service/timer actions.
+Purpose: inspect and control the authoritative system or user service manager.
+
+`BACKUP_SYSTEMD_SCOPE=system|user|auto` selects the manager. Production uses
+`system`; the configuration source is the repository `.env`. The page shows
+desired/effective schedules, timezone drift, next/last triggers and last service
+result. Authorization failures do not fall back to a different manager.
 
 ```text
 Systemd
@@ -589,6 +594,7 @@ Timer:   load=loaded active=active sub=waiting enabled=enabled
 
 Actions
 Refresh status
+Apply saved schedule
 Daemon reload
 Enable timer
 Disable timer
@@ -600,7 +606,7 @@ Stop service
 
 Selected Action
 Runs the backup service once immediately, outside timer timing.
-Command: systemctl --user start sdl-db-backup.service
+Command: systemctl start sdl-db-backup.service  # production system scope
 ```
 
 Controls:
@@ -614,6 +620,7 @@ The Systemd page uses a bounded viewport for the unit preview and action details
 
 Actions:
 - Refresh status
+- Apply saved schedule: validate, install the managed timer drop-in, reload, verify, and roll back on failure. Requires privileges for the selected scope.
 - Daemon reload
 - Enable timer
 - Disable timer
@@ -709,7 +716,16 @@ Main viewport composition:
 - TUI helpers and shared logic: `internal/tui/helpers.go`
 - TUI entrypoint: `cmd/sdl-db-backup-tui/main.go`
 - Backup engine: `internal/backupapp/app.go`
-- User systemd unit: `sdl-db-backup.service`
-- User systemd timer: `sdl-db-backup.timer`
+- Configured systemd service unit: `sdl-db-backup.service`
+- Configured systemd timer: `sdl-db-backup.timer`
 - Environment config: `.env`
 - Template config: `.env.example`
+
+## Production reliability settings
+
+See [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md) for the current
+six-database global capture, system scope, Europe/Berlin schedule, capacity
+reserve, and retention hold. Saving settings alone does not apply the timer.
+Health distinguishes latest complete/partial captures and verified remote
+copies from unverified recovery availability. Global bundles cannot use the
+existing per-database restore action.

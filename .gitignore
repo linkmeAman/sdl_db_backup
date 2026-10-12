@@ -16,3 +16,24 @@ configs/
 # Disposable container integration test output
 tests/integration/results/
 *.png
+
+# Sensitive production backup artifacts generated during remediation
+remediation/captured-backups/
+remediation/oneoff-logs/
+remediation/staged/candidate
+remediation/production-backups/
+remediation/tools/
+remediation/releases/
+remediation/rollback/
+remediation/__pycache__/
+
+# Local systemd audit and lock files; configuration credentials stay private.
+.env.schedule-audit
+.env.schedule.lock
+# Deployment snapshots and private production inventories are local artifacts.
+remediation/staged/
+remediation/reliability.patch
+remediation/changed-files.json
+remediation/package-manifest*.json
+remediation/evidence/phase0-inventory.json
+remediation/view-definer-*.sql

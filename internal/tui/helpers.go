@@ -271,10 +271,16 @@ func formatOverrideValues(values map[string]string) string {
 }
 
 func (m model) systemdActions() []systemdActionDef {
-	return []systemdActionDef{
+	scope := m.systemd.Scope
+	prefix := "systemctl"
+	if scope == "user" {
+		prefix += " --user"
+	}
+	actions := []systemdActionDef{
+		{label: "Apply saved schedule", action: backupapp.SystemdApplySchedule, confirm: "Apply the saved schedule to the authoritative timer, reload systemd and verify?", command: "sdl-db-backup-schedule --apply", description: "Writes the managed timer drop-in. Requires authorization in the selected scope; rolls back on failure."},
 		{label: "Refresh status", refresh: true, command: "systemctl --user show ...", description: "Reloads displayed service and timer state without changing anything."},
 		{label: "Daemon reload", action: backupapp.SystemdDaemonReload, confirm: "Run systemctl --user daemon-reload?", command: "systemctl --user daemon-reload", description: "Reloads user systemd unit files after changing or copying service/timer files."},
-		{label: "Enable timer", action: backupapp.SystemdEnableTimer, confirm: "Enable and start " + m.cfg.TimerUnitName + "?", command: "systemctl --user enable --now " + m.cfg.TimerUnitName, description: "Starts the timer now and enables it for future user sessions."},
+		{label: "Enable timer", action: backupapp.SystemdEnableTimer, confirm: "Enable and start " + m.cfg.TimerUnitName + "?", command: "systemctl --user enable --now " + m.cfg.TimerUnitName, description: "Starts the authoritative timer and enables its scheduled runs."},
 		{label: "Disable timer", action: backupapp.SystemdDisableTimer, confirm: "Disable and stop " + m.cfg.TimerUnitName + "?", command: "systemctl --user disable --now " + m.cfg.TimerUnitName, description: "Stops scheduled backups and disables automatic timer activation."},
 		{label: "Start timer", action: backupapp.SystemdStartTimer, confirm: "Start the backup timer?", command: "systemctl --user start " + m.cfg.TimerUnitName, description: "Starts the timer for this session without changing enabled state."},
 		{label: "Stop timer", action: backupapp.SystemdStopTimer, confirm: "Stop the backup timer?", command: "systemctl --user stop " + m.cfg.TimerUnitName, description: "Stops the timer for this session without changing enabled state."},
@@ -282,6 +288,12 @@ func (m model) systemdActions() []systemdActionDef {
 		{label: "Start service", action: backupapp.SystemdStartSvc, confirm: "Start the backup service?", command: "systemctl --user start " + m.cfg.ServiceUnitName, description: "Runs the backup service once immediately, outside timer timing."},
 		{label: "Stop service", action: backupapp.SystemdStopSvc, confirm: "Stop the backup service?", command: "systemctl --user stop " + m.cfg.ServiceUnitName, description: "Stops a currently running backup service."},
 	}
+	for i := range actions {
+		actions[i].command = strings.ReplaceAll(actions[i].command, "systemctl --user", prefix)
+		actions[i].confirm = strings.ReplaceAll(actions[i].confirm, "systemctl --user", prefix)
+		actions[i].description = strings.ReplaceAll(actions[i].description, "user systemd", "authoritative systemd")
+	}
+	return actions
 }
 
 func (p *runProgressState) applyLogLine(line string) {
@@ -472,6 +484,14 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 		})
 	}
 
+	addBool("Reliability", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE", "Session-only Dump Timeout", cfg.MySQLDumpSessionTimeoutOverride, func(c *backupapp.Config, v bool) { c.MySQLDumpSessionTimeoutOverride = v })
+	addString("Reliability", "BACKUP_SYSTEMD_SCOPE", "Service Manager Scope", cfg.SystemdScope, false, func(c *backupapp.Config, v string) { c.SystemdScope = v })
+	addString("Reliability", "BACKUP_SCHEDULE_TIMEZONE", "Schedule Timezone", cfg.ScheduleTimezone, false, func(c *backupapp.Config, v string) { c.ScheduleTimezone = v })
+	addString("Reliability", "BACKUP_LOGICAL_CONSISTENCY", "Logical Consistency", cfg.LogicalConsistency, false, func(c *backupapp.Config, v string) { c.LogicalConsistency = v })
+	addBool("Reliability", "BACKUP_RETENTION_DELETE_ENABLED", "Authorize Retention Quarantine", cfg.RetentionDeleteEnabled, func(c *backupapp.Config, v bool) { c.RetentionDeleteEnabled = v })
+	addInt("Reliability", "BACKUP_RETENTION_MIN_COMPLETE", "Protected Complete Points", cfg.RetentionMinComplete, func(c *backupapp.Config, v int) { c.RetentionMinComplete = v })
+	addInt("Reliability", "BACKUP_STORAGE_RESERVE_BYTES", "Storage Reserve Bytes", cfg.StorageReserveBytes, func(c *backupapp.Config, v int) { c.StorageReserveBytes = v })
+	addInt("Reliability", "BACKUP_STORAGE_ESTIMATE_BYTES", "Storage Estimate Bytes", cfg.StorageEstimateBytes, func(c *backupapp.Config, v int) { c.StorageEstimateBytes = v })
 	addString("Database", "DB_USER", "DB User", cfg.DBUser, false, func(c *backupapp.Config, v string) { c.DBUser = v })
 	addString("Database", "DB_PASS", "DB Password", cfg.DBPass, true, func(c *backupapp.Config, v string) { c.DBPass = v })
 	addString("Database", "DB_HOST", "DB Host", cfg.DBHost, false, func(c *backupapp.Config, v string) { c.DBHost = v })

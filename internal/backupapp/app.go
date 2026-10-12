@@ -21,22 +21,25 @@ const runTimestampLayout = "2006-01-02_15-04-05"
 type PhysicalBackupResult = physicalBackupResult
 
 type physicalBackupResult struct {
-	Status             string `json:"status"`
-	TargetDir          string `json:"target_dir,omitempty"`
-	RemoteSizeBytes    int64  `json:"remote_size_bytes,omitempty"`
-	RemoteETag         string `json:"remote_etag,omitempty"`
-	CompletionObject   string `json:"completion_object,omitempty"`
-	Duration           string `json:"duration"`
-	Error              string `json:"error,omitempty"`
-	Attempts           int    `json:"attempts,omitempty"`
-	RateLimitRetries   int    `json:"rate_limit_retries,omitempty"`
-	XtrabackupParallel int    `json:"xtrabackup_parallel,omitempty"`
-	XbcloudParallel    int    `json:"xbcloud_parallel,omitempty"`
+	RemoteIntegrityState string `json:"remote_integrity_state,omitempty"`
+	Status               string `json:"status"`
+	TargetDir            string `json:"target_dir,omitempty"`
+	RemoteSizeBytes      int64  `json:"remote_size_bytes,omitempty"`
+	RemoteETag           string `json:"remote_etag,omitempty"`
+	CompletionObject     string `json:"completion_object,omitempty"`
+	Duration             string `json:"duration"`
+	Error                string `json:"error,omitempty"`
+	Attempts             int    `json:"attempts,omitempty"`
+	RateLimitRetries     int    `json:"rate_limit_retries,omitempty"`
+	XtrabackupParallel   int    `json:"xtrabackup_parallel,omitempty"`
+	XbcloudParallel      int    `json:"xbcloud_parallel,omitempty"`
 }
 
 type DatabaseResult = databaseResult
 
 type databaseResult struct {
+	ErrorCode           int                  `json:"error_code,omitempty"`
+	ExpectedObjects     map[string][]string  `json:"expected_objects,omitempty"`
 	Name                string               `json:"name"`
 	Status              string               `json:"status"`
 	Attempts            int                  `json:"attempts"`
@@ -90,42 +93,55 @@ type mysqlPITRCoordinate struct {
 type RunResult = runRecord
 
 type runRecord struct {
-	Timestamp                time.Time                  `json:"timestamp"`
-	RunID                    string                     `json:"run_id"`
-	Status                   string                     `json:"status"`
-	BackupDir                string                     `json:"backup_dir"`
-	RunFolder                string                     `json:"run_folder,omitempty"`
-	LogFile                  string                     `json:"log_file,omitempty"`
-	FailureReason            string                     `json:"failure_reason,omitempty"`
-	CleanupError             string                     `json:"cleanup_error,omitempty"`
-	Duration                 string                     `json:"duration"`
-	DatabasesTotal           int                        `json:"databases_total"`
-	DatabasesSucceeded       int                        `json:"databases_succeeded"`
-	DatabasesFailed          int                        `json:"databases_failed"`
-	LogicalBackupScope       string                     `json:"logical_backup_scope,omitempty"`
-	LogicalOmissions         []string                   `json:"logical_omissions,omitempty"`
-	MySQLPITR                *mysqlPITRMetadata         `json:"mysql_pitr,omitempty"`
-	Results                  []databaseResult           `json:"results,omitempty"`
-	PhysicalBackup           *physicalBackupResult      `json:"physical_backup,omitempty"`
-	ExitCode                 int                        `json:"-"`
-	LogicalUploadRun         bool                       `json:"logical_upload_run,omitempty"`
-	LogicalUploadStatus      string                     `json:"logical_upload_status,omitempty"`
-	LogicalUploadNote        string                     `json:"logical_upload_note,omitempty"`
-	LogicalUploadError       string                     `json:"logical_upload_error,omitempty"`
-	AdaptiveLoadPerCPU       float64                    `json:"adaptive_load_per_cpu,omitempty"`
-	AdaptiveLogicalParallel  int                        `json:"adaptive_logical_parallel,omitempty"`
-	AdaptivePhysicalParallel int                        `json:"adaptive_physical_parallel,omitempty"`
-	AdaptiveXbcloudParallel  int                        `json:"adaptive_xbcloud_parallel,omitempty"`
-	AdaptiveTuningReason     string                     `json:"adaptive_tuning_reason,omitempty"`
-	ValidationCheckedAt      time.Time                  `json:"validation_checked_at,omitempty"`
-	ValidationMode           string                     `json:"validation_mode,omitempty"`
-	ValidationStatus         string                     `json:"validation_status,omitempty"`
-	ValidationError          string                     `json:"validation_error,omitempty"`
-	ValidationDatabases      []DatabaseValidationResult `json:"validation_databases,omitempty"`
-	OSUser                   string                     `json:"os_user,omitempty"`
-	ExecutionSource          string                     `json:"execution_source,omitempty"`
-	Hostname                 string                     `json:"hostname,omitempty"`
-	PID                      int                        `json:"pid,omitempty"`
+	LocalCaptureIntegrityState string                     `json:"local_capture_integrity_state,omitempty"`
+	S3Destination              string                     `json:"s3_destination,omitempty"`
+	RemoteIntegrityState       string                     `json:"remote_integrity_state,omitempty"`
+	FormatVersion              int                        `json:"format_version,omitempty"`
+	RecoveryState              string                     `json:"recovery_state,omitempty"`
+	EndedAt                    time.Time                  `json:"ended_at,omitempty"`
+	ExpectedDatabases          []string                   `json:"expected_databases,omitempty"`
+	BackupType                 string                     `json:"backup_type,omitempty"`
+	ConsistencyMethod          string                     `json:"consistency_method,omitempty"`
+	Compression                string                     `json:"compression,omitempty"`
+	Encrypted                  bool                       `json:"encrypted,omitempty"`
+	RestoreTestState           string                     `json:"restore_test_state,omitempty"`
+	Capacity                   *CapacityReport            `json:"capacity,omitempty"`
+	Timestamp                  time.Time                  `json:"timestamp"`
+	RunID                      string                     `json:"run_id"`
+	Status                     string                     `json:"status"`
+	BackupDir                  string                     `json:"backup_dir"`
+	RunFolder                  string                     `json:"run_folder,omitempty"`
+	LogFile                    string                     `json:"log_file,omitempty"`
+	FailureReason              string                     `json:"failure_reason,omitempty"`
+	CleanupError               string                     `json:"cleanup_error,omitempty"`
+	Duration                   string                     `json:"duration"`
+	DatabasesTotal             int                        `json:"databases_total"`
+	DatabasesSucceeded         int                        `json:"databases_succeeded"`
+	DatabasesFailed            int                        `json:"databases_failed"`
+	LogicalBackupScope         string                     `json:"logical_backup_scope,omitempty"`
+	LogicalOmissions           []string                   `json:"logical_omissions,omitempty"`
+	MySQLPITR                  *mysqlPITRMetadata         `json:"mysql_pitr,omitempty"`
+	Results                    []databaseResult           `json:"results,omitempty"`
+	PhysicalBackup             *physicalBackupResult      `json:"physical_backup,omitempty"`
+	ExitCode                   int                        `json:"-"`
+	LogicalUploadRun           bool                       `json:"logical_upload_run,omitempty"`
+	LogicalUploadStatus        string                     `json:"logical_upload_status,omitempty"`
+	LogicalUploadNote          string                     `json:"logical_upload_note,omitempty"`
+	LogicalUploadError         string                     `json:"logical_upload_error,omitempty"`
+	AdaptiveLoadPerCPU         float64                    `json:"adaptive_load_per_cpu,omitempty"`
+	AdaptiveLogicalParallel    int                        `json:"adaptive_logical_parallel,omitempty"`
+	AdaptivePhysicalParallel   int                        `json:"adaptive_physical_parallel,omitempty"`
+	AdaptiveXbcloudParallel    int                        `json:"adaptive_xbcloud_parallel,omitempty"`
+	AdaptiveTuningReason       string                     `json:"adaptive_tuning_reason,omitempty"`
+	ValidationCheckedAt        time.Time                  `json:"validation_checked_at,omitempty"`
+	ValidationMode             string                     `json:"validation_mode,omitempty"`
+	ValidationStatus           string                     `json:"validation_status,omitempty"`
+	ValidationError            string                     `json:"validation_error,omitempty"`
+	ValidationDatabases        []DatabaseValidationResult `json:"validation_databases,omitempty"`
+	OSUser                     string                     `json:"os_user,omitempty"`
+	ExecutionSource            string                     `json:"execution_source,omitempty"`
+	Hostname                   string                     `json:"hostname,omitempty"`
+	PID                        int                        `json:"pid,omitempty"`
 }
 
 type ManualRunMode string
@@ -186,6 +202,8 @@ type TemporaryOverrides struct {
 
 type SystemdAction string
 
+const SystemdApplySchedule SystemdAction = "apply_schedule"
+
 const (
 	SystemdDaemonReload SystemdAction = "daemon-reload"
 	SystemdEnableTimer  SystemdAction = "enable-timer"
@@ -198,16 +216,25 @@ const (
 )
 
 type UnitState struct {
-	Name      string
-	LoadState string
-	Active    string
-	SubState  string
-	Enabled   string
+	Calendar     string
+	NextTrigger  string
+	LastTrigger  string
+	Result       string
+	FragmentPath string
+	ConfigSource string
+	Name         string
+	LoadState    string
+	Active       string
+	SubState     string
+	Enabled      string
 }
 
 type UnitStatus struct {
-	Service UnitState
-	Timer   UnitState
+	Scope           string
+	DesiredSchedule string
+	ScheduleDrift   bool
+	Service         UnitState
+	Timer           UnitState
 }
 
 type HealthCheck struct {
@@ -300,6 +327,8 @@ func BuildAPIRunResult(run RunResult) APIRunResult {
 }
 
 type HealthReport struct {
+	Capacity            CapacityReport
+	Recovery            RecoveryHealth
 	ConfigPath          string
 	RunLogPath          string
 	DailyLogPath        string
@@ -595,42 +624,50 @@ func acquireLock(lockFile string) (func(), error) {
 		return nil, fmt.Errorf("create lock dir: %w", err)
 	}
 
-	file, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	file, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0640)
 	if err != nil {
-		if !os.IsExist(err) {
-			return nil, fmt.Errorf("create lock file %s: %w", lockFile, err)
-		}
-		// Lock file exists — check whether the owning process is still alive.
-		state, _ := os.ReadFile(lockFile)
-		if stale, pid := isLockStale(string(state)); stale {
-			log.Printf("removing stale lock file (pid=%d is no longer running)", pid)
-			if rmErr := os.Remove(lockFile); rmErr != nil && !os.IsNotExist(rmErr) {
-				return nil, fmt.Errorf("remove stale lock: %w", rmErr)
-			}
-			file, err = os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
-			if err != nil {
-				return nil, fmt.Errorf("create lock file after stale removal: %w", err)
-			}
-		} else {
-			info := strings.TrimSpace(string(state))
-			if info != "" {
-				return nil, fmt.Errorf("another backup run is already active: %s", info)
-			}
-			return nil, errors.New("another backup run is already active")
-		}
+		return nil, err
 	}
-
-	_, _ = fmt.Fprintf(file, "pid=%d started=%s", os.Getpid(), time.Now().Format(time.RFC3339))
-	_ = file.Close()
-
-	released := false
+	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("another backup run is already active: %w", err)
+	}
+	// Reject an active legacy O_EXCL owner before adopting this lock file.
+	data, e := io.ReadAll(file)
+	if e != nil {
+		file.Close()
+		return nil, e
+	}
+	if stale, pid := isLockStale(string(data)); !stale && pid != os.Getpid() {
+		file.Close()
+		return nil, fmt.Errorf("another legacy backup run is active (pid=%d)", pid)
+	}
+	if err = file.Truncate(0); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if _, err = file.Seek(0, 0); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if _, err = fmt.Fprintf(file, "pid=%d started=%s", os.Getpid(), time.Now().UTC().Format(time.RFC3339)); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err = file.Sync(); err != nil {
+		file.Close()
+		return nil, err
+	}
+	var once sync.Once
 	return func() {
-		if released {
-			return
-		}
-		released = true
-		_ = os.Remove(lockFile)
+		once.Do(func() {
+			_ = file.Truncate(0)
+			_ = file.Sync()
+			_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+			_ = file.Close()
+		})
 	}, nil
+
 }
 
 // isLockStale parses the PID from a lock file and returns true if that
@@ -651,6 +688,9 @@ func isLockStale(content string) (bool, int) {
 		}
 		// Signal 0 tests process existence without delivering a real signal.
 		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			if errors.Is(err, syscall.EPERM) {
+				return false, pid
+			}
 			return true, pid // process is dead
 		}
 		return false, pid // process is alive
@@ -709,6 +749,14 @@ func validatePrerequisites(cfg config, requireLogicalDump bool) error {
 		if requireLogicalDump {
 			if _, err := exec.LookPath(cfg.MySQLDumpBin); err != nil {
 				return fmt.Errorf("mysqldump binary %q not found in PATH: %w", cfg.MySQLDumpBin, err)
+			}
+			if cfg.MySQLDumpSessionTimeoutOverride {
+				ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
+				help, err := exec.CommandContext(ctx, cfg.MySQLDumpBin, "--no-defaults", "--help").Output()
+				cancel()
+				if err != nil || !strings.Contains(string(help), "--init-command") {
+					return fmt.Errorf("configured mysqldump must support --init-command for session-only timeout settings")
+				}
 			}
 		}
 	}
@@ -820,7 +868,13 @@ func pingMySQL(cfg config) error {
 	return nil
 }
 
+var backupRunMutex sync.Mutex
+
 func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, error) {
+	if !backupRunMutex.TryLock() {
+		return RunResult{}, fmt.Errorf("another backup run is already active in this process")
+	}
+	defer backupRunMutex.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -830,7 +884,19 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	default:
 	}
 	startedAt := time.Now()
+	zone := cfg.ScheduleTimezone
+	if zone == "" {
+		zone = "Local"
+	}
+	location, zoneErr := time.LoadLocation(zone)
+	if zoneErr != nil {
+		return RunResult{}, fmt.Errorf("invalid schedule timezone: %w", zoneErr)
+	}
+	scheduleNow := startedAt.In(location)
 	runID := startedAt.Format(runTimestampLayout)
+	if _, err := os.Stat(filepath.Join(cfg.BackupDir, runID)); err == nil {
+		return RunResult{}, fmt.Errorf("run ID collision; retry after the current second")
+	}
 	resourceProfile := buildAdaptiveResourceProfile(cfg, 0)
 	logAdaptiveResourceProfile(resourceProfile)
 	record := runRecord{
@@ -936,11 +1002,12 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 
 	statePath := filepath.Join(cfg.LogDir, "backup-schedule-state.json")
 	state := loadScheduleState(statePath)
+	originalState := state
 	logicalLastSuccess := parseScheduleTimestamp(state.LogicalLastSuccess)
 	physicalLastSuccess := parseScheduleTimestamp(state.PhysicalLastSuccess)
 
 	if cfg.LogicalEnabled {
-		logicalDue, logicalScheduleReason, err = evaluateSchedule(time.Now(), cfg.LogicalSchedule, logicalLastSuccess)
+		logicalDue, logicalScheduleReason, err = evaluateSchedule(scheduleNow, cfg.LogicalSchedule, logicalLastSuccess)
 		if err != nil {
 			record.FailureReason = fmt.Sprintf("logical backup schedule error: %v", err)
 			record.ExitCode = finalizeRun(cfg, &record, startedAt)
@@ -964,7 +1031,7 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		if !cfg.PhysicalS3UploadEnabled {
 			log.Printf("physical backup: skipped because BACKUP_PHYSICAL_S3_UPLOAD_ENABLED=false and physical mode only supports direct S3 upload")
 		} else {
-			physicalDue, physicalScheduleReason, err = evaluateSchedule(time.Now(), cfg.PhysicalSchedule, physicalLastSuccess)
+			physicalDue, physicalScheduleReason, err = evaluateSchedule(scheduleNow, cfg.PhysicalSchedule, physicalLastSuccess)
 			if err != nil {
 				record.FailureReason = fmt.Sprintf("physical backup schedule error: %v", err)
 				record.ExitCode = finalizeRun(cfg, &record, startedAt)
@@ -990,6 +1057,13 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		log.Printf("no backup tasks are due for this run; continuing with preflight-only validation")
 	}
 
+	capacity, capacityErr := preflightCapacity(cfg, logicalDue)
+	record.Capacity = &capacity
+	if capacityErr != nil {
+		record.FailureReason = capacityErr.Error()
+		record.ExitCode = finalizeRun(cfg, &record, startedAt)
+		return record, nil
+	}
 	logicalPlanned := logicalDue || (cfg.PreflightOnly && cfg.LogicalEnabled)
 	physicalPlanned := physicalDue || (cfg.PreflightOnly && cfg.PhysicalEnabled && cfg.PhysicalS3UploadEnabled)
 
@@ -1017,13 +1091,18 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		return record, nil
 	}
 	record.RunFolder = runFolder
+	record.Status = "running"
+	setManifestMetadata(cfg, &record)
+	if err := writeManifest(runFolder, record); err != nil {
+		return record, err
+	}
+	record.Status = "failed"
 	log.Printf("backup folder: %s", runFolder)
 	stateDirty := false
 
 	if logicalDue {
 		if cfg.DBEngine == "mysql" {
-			restoreMaxExecTime := tryDisableMaxExecutionTime(cfg)
-			defer restoreMaxExecTime()
+			log.Print("backup uses session settings; production GLOBAL max_execution_time is unchanged")
 		}
 		logicalCfg := cfg
 		logicalCfg.LogicalParallel = resourceProfile.LogicalParallel
@@ -1040,6 +1119,22 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		}
 		if len(cfg.LogicalDatabases) > 0 {
 			log.Printf("logical backup: selected databases=%s matched=%s", strings.Join(cfg.LogicalDatabases, ", "), strings.Join(databases, ", "))
+		}
+		record.ExpectedDatabases = append([]string(nil), databases...)
+		if len(cfg.LogicalDatabases) > 0 {
+			for _, expected := range cfg.LogicalDatabases {
+				found := false
+				for _, actual := range databases {
+					if actual == expected {
+						found = true
+					}
+				}
+				if !found {
+					record.FailureReason = "required database missing from discovery: " + expected
+					record.ExitCode = finalizeRun(cfg, &record, startedAt)
+					return record, nil
+				}
+			}
 		}
 		record.DatabasesTotal = len(databases)
 
@@ -1076,7 +1171,23 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 					log.Printf("captured MySQL PITR server observation binlog=%s position=%d", pitrMetadata.BinlogFile, pitrMetadata.BinlogPosition)
 				}
 			}
-			for _, result := range executeLogicalBackupTasks(logicalCfg, tasks) {
+			outcomes := []databaseResult{}
+			if cfg.LogicalConsistency == "global" {
+				record.ConsistencyMethod = "single mysqldump transaction across all selected InnoDB databases; DDL excluded by policy"
+				outcomes, err = captureGlobalLogical(logicalCfg, runFolder, databases)
+				if err != nil {
+					record.FailureReason = err.Error()
+					record.ExitCode = finalizeRun(cfg, &record, startedAt)
+					return record, nil
+				}
+			} else if cfg.LogicalConsistency == "per_database" || cfg.LogicalConsistency == "" {
+				outcomes = executeLogicalBackupTasks(logicalCfg, tasks)
+			} else {
+				record.FailureReason = "unsupported BACKUP_LOGICAL_CONSISTENCY"
+				record.ExitCode = finalizeRun(cfg, &record, startedAt)
+				return record, nil
+			}
+			for _, result := range outcomes {
 				record.Results = append(record.Results, result)
 				if len(result.SelectedTables) > 0 {
 					record.LogicalBackupScope = "partial_table_scope"
@@ -1129,11 +1240,6 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 			log.Printf("cleanup warning: %v", cleanupErr)
 		}
 	}
-	if stateDirty {
-		if err := saveScheduleState(statePath, state); err != nil {
-			log.Printf("warning: failed to save schedule state %s: %v", statePath, err)
-		}
-	}
 
 	switch {
 	case record.DatabasesFailed == 0 && record.FailureReason == "" && record.LogicalBackupScope == "" && len(record.LogicalOmissions) == 0:
@@ -1150,6 +1256,15 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	}
 
 	if record.RunFolder != "" && logicalDue {
+		if record.Status == "success" {
+			if err := verifyLogicalCapture(cfg, record, runFolder); err != nil {
+				record.Status = "failed"
+				record.FailureReason = err.Error()
+			} else {
+				record.LocalCaptureIntegrityState = "VERIFIED"
+			}
+		}
+		setManifestMetadata(cfg, &record)
 		if err := writeManifest(record.RunFolder, record); err != nil {
 			log.Printf("warning: failed to write pre-upload manifest for run=%s: %v", record.RunID, err)
 		}
@@ -1161,6 +1276,11 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 			} else {
 				logicalUploadSucceeded = true
 				markLogicalUploadSuccess(&record)
+				if !verifiedUploadMode(cfg) {
+					record.Status = "partial"
+					record.LogicalUploadStatus = "pending_verification"
+					record.FailureReason = "legacy upload helper did not independently verify remote completion"
+				}
 			}
 		} else {
 			note := "logical backup S3 upload skipped by BACKUP_LOGICAL_S3_UPLOAD_ENABLED=false or logical backup not scheduled"
@@ -1168,6 +1288,16 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 			log.Printf("%s", note)
 		}
 	}
+	if logicalDue && record.Status != "success" {
+		state.LogicalLastSuccess = originalState.LogicalLastSuccess
+	}
+	if stateDirty {
+		if err := saveScheduleState(statePath, state); err != nil {
+			record.Status = "failed"
+			record.FailureReason = "persist schedule state: " + err.Error()
+		}
+	}
+	setManifestMetadata(cfg, &record)
 	record.ExitCode = finalizeRun(cfg, &record, startedAt)
 	return record, nil
 }

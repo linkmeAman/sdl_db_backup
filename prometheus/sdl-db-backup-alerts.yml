@@ -112,3 +112,13 @@ groups:
         annotations:
           summary: "SDL backup success is stale"
           description: "No fully successful backup has been recorded within the expected SLA window."
+
+      - alert: SDLDBBackupCapacityInsufficient
+        expr: backup_storage_capacity_sufficient{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0 and backup_storage_required_bytes{exported_job="sdl_db_backup",service="mysql",env="pilot"} > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Backup capacity below capture and reserve requirement"
+          description: "Provision storage or review the deletion dry run; preserve complete recovery points."

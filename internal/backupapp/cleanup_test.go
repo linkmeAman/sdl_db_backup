@@ -27,8 +27,8 @@ func TestCleanupKeepsNewestRestoreVerifiedRun(t *testing.T) {
 	if _, err := os.Stat(oldVerified); err != nil {
 		t.Fatalf("expected validated run to be retained: %v", err)
 	}
-	if _, err := os.Stat(newerUnverified); !os.IsNotExist(err) {
-		t.Fatalf("expected unverified run to be removed, stat err=%v", err)
+	if _, err := os.Stat(newerUnverified); err != nil {
+		t.Fatalf("expected unproven recovery value to be held, stat err=%v", err)
 	}
 
 }

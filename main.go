@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,32 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	if len(os.Args) == 3 && os.Args[1] == "reconcile-capture" {
+		cfg, e := backupapp.LoadEffectiveConfig(os.Getenv("BACKUP_ENV_FILE"))
+		if e != nil {
+			log.Fatal(e)
+		}
+		r, e := backupapp.ReconcileCapturedLogicalRun(cfg, os.Args[2])
+		if e != nil {
+			log.Fatal(e)
+		}
+		fmt.Printf("run=%s state=%s databases=%d/%d remote_integrity=%s\n", r.RunID, r.RecoveryState, r.DatabasesSucceeded, r.DatabasesTotal, r.RemoteIntegrityState)
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "retention-plan" {
+		cfg, err := backupapp.LoadEffectiveConfig(os.Getenv("BACKUP_ENV_FILE"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		plan, err := backupapp.PlanRetention(cfg, "")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(plan); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "decrypt" {
 		if len(os.Args) != 3 {
 			log.Fatalf("Usage: sdl-db-backup decrypt <artifact.sql.gz.enc>")

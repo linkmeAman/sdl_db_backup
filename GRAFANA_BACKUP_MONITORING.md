@@ -1108,3 +1108,20 @@ This lets you distinguish:
 - **Graph Modes:** Changed step behaviour away from `area` continuous slopes to `none` (staircase style) for distinct backup runs.
 - **Loki Data Source Provisioning:** Resolved missing datasource variables (`${DS_LOKI}`) by explicitly defining the `sdl-db-backup-loki` UID in both the dashboard JSON and `grafana/provisioning/datasources/sdl-db-backup-loki-datasource.yml`.
 - **Promtail Connectivity:** Fixed file permissions on `/srv/backup/mysql_backup/logs/` (requiring `755` for traversal and `644` for files) to allow Promtail to ingest logs without access denied errors.
+
+## Capture capacity and retention hold metrics
+
+`backup_storage_available_bytes` reports usable space on the capture filesystem.
+`backup_storage_required_bytes` reports the estimated capture footprint plus its
+configured safety reserve. `backup_storage_capacity_sufficient` is 1 when the
+preflight can accommodate both, and 0 when capture must be refused.
+
+`backup_retention_deletion_enabled` is 0 by default. A value of 1 means an
+operator explicitly enabled retention quarantine; it does not prove a backup
+is complete or authorize purging quarantined recovery points.
+
+Use the existing Prometheus and Alertmanager route for the
+`SDLDBBackupCapacityInsufficient` rule. No additional notification service is
+required. Verify that the rule file is actually loaded before claiming alerts
+are active. Existing overall failure and stale-success alerts continue to
+cover failed and partial captures.
