@@ -18,6 +18,18 @@ import (
 type Config = config
 
 type config struct {
+	StorageAutoCleanup     bool
+	StorageHighWatermark   int
+	StorageLowWatermark    int
+	StorageGrowthPercent   int
+	StorageHistoryRuns     int
+	StorageConcurrentBytes int
+	StorageTemporaryBytes  int
+	StorageMinFreeInodes   int
+	StorageTempMaxAge      time.Duration
+	StorageVerifyTimeout   time.Duration
+	StorageSecondaryDir    string
+
 	RetentionDeleteEnabled          bool
 	RetentionMinComplete            int
 	StorageReserveBytes             int
@@ -315,6 +327,18 @@ func loadConfigFromValues(values map[string]string) config {
 	}
 
 	return config{
+
+		StorageAutoCleanup:              getMapBool(values, "BACKUP_STORAGE_AUTO_CLEANUP", false),
+		StorageHighWatermark:            getMapInt(values, "BACKUP_STORAGE_HIGH_WATERMARK", 92),
+		StorageLowWatermark:             getMapInt(values, "BACKUP_STORAGE_LOW_WATERMARK", 90),
+		StorageGrowthPercent:            getMapInt(values, "BACKUP_STORAGE_GROWTH_PERCENT", 50),
+		StorageHistoryRuns:              getMapInt(values, "BACKUP_STORAGE_HISTORY_RUNS", 12),
+		StorageConcurrentBytes:          getMapInt(values, "BACKUP_STORAGE_CONCURRENT_BYTES", 512<<20),
+		StorageTemporaryBytes:           getMapInt(values, "BACKUP_STORAGE_TEMPORARY_BYTES", 256<<20),
+		StorageMinFreeInodes:            getMapInt(values, "BACKUP_STORAGE_MIN_FREE_INODES", 128),
+		StorageTempMaxAge:               getMapDuration(values, "BACKUP_STORAGE_TEMP_MAX_AGE", 24*time.Hour),
+		StorageVerifyTimeout:            getMapDuration(values, "BACKUP_STORAGE_VERIFY_TIMEOUT", 20*time.Minute),
+		StorageSecondaryDir:             getMapValue(values, "BACKUP_STORAGE_SECONDARY_DIR", ""),
 		RetentionDeleteEnabled:          getMapBool(values, "BACKUP_RETENTION_DELETE_ENABLED", false),
 		RetentionMinComplete:            max(1, getMapInt(values, "BACKUP_RETENTION_MIN_COMPLETE", 2)),
 		StorageReserveBytes:             getMapInt(values, "BACKUP_STORAGE_RESERVE_BYTES", 2<<30),
@@ -557,7 +581,7 @@ func ClearTemporaryOverrides(envPath string) error {
 }
 
 func managedEnvKeys() []string {
-	return []string{"BACKUP_RETENTION_DELETE_ENABLED", "BACKUP_RETENTION_MIN_COMPLETE", "BACKUP_STORAGE_RESERVE_BYTES", "BACKUP_STORAGE_ESTIMATE_BYTES", "BACKUP_SYSTEMD_SCOPE", "BACKUP_LOGICAL_CONSISTENCY", "BACKUP_SCHEDULE_TIMEZONE", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE",
+	return []string{"BACKUP_STORAGE_AUTO_CLEANUP", "BACKUP_STORAGE_HIGH_WATERMARK", "BACKUP_STORAGE_LOW_WATERMARK", "BACKUP_STORAGE_GROWTH_PERCENT", "BACKUP_STORAGE_HISTORY_RUNS", "BACKUP_STORAGE_CONCURRENT_BYTES", "BACKUP_STORAGE_TEMPORARY_BYTES", "BACKUP_STORAGE_MIN_FREE_INODES", "BACKUP_STORAGE_TEMP_MAX_AGE", "BACKUP_STORAGE_VERIFY_TIMEOUT", "BACKUP_STORAGE_SECONDARY_DIR", "BACKUP_RETENTION_DELETE_ENABLED", "BACKUP_RETENTION_MIN_COMPLETE", "BACKUP_STORAGE_RESERVE_BYTES", "BACKUP_STORAGE_ESTIMATE_BYTES", "BACKUP_SYSTEMD_SCOPE", "BACKUP_LOGICAL_CONSISTENCY", "BACKUP_SCHEDULE_TIMEZONE", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE",
 		"DB_USER",
 		"DB_PASS",
 		"DB_ENGINE",
@@ -643,6 +667,17 @@ func managedEnvKeys() []string {
 
 func envMapFromConfig(cfg Config) map[string]string {
 	values := map[string]string{
+		"BACKUP_STORAGE_AUTO_CLEANUP":               fmt.Sprint(cfg.StorageAutoCleanup),
+		"BACKUP_STORAGE_HIGH_WATERMARK":             fmt.Sprint(cfg.StorageHighWatermark),
+		"BACKUP_STORAGE_LOW_WATERMARK":              fmt.Sprint(cfg.StorageLowWatermark),
+		"BACKUP_STORAGE_GROWTH_PERCENT":             fmt.Sprint(cfg.StorageGrowthPercent),
+		"BACKUP_STORAGE_HISTORY_RUNS":               fmt.Sprint(cfg.StorageHistoryRuns),
+		"BACKUP_STORAGE_CONCURRENT_BYTES":           fmt.Sprint(cfg.StorageConcurrentBytes),
+		"BACKUP_STORAGE_TEMPORARY_BYTES":            fmt.Sprint(cfg.StorageTemporaryBytes),
+		"BACKUP_STORAGE_MIN_FREE_INODES":            fmt.Sprint(cfg.StorageMinFreeInodes),
+		"BACKUP_STORAGE_TEMP_MAX_AGE":               cfg.StorageTempMaxAge.String(),
+		"BACKUP_STORAGE_VERIFY_TIMEOUT":             cfg.StorageVerifyTimeout.String(),
+		"BACKUP_STORAGE_SECONDARY_DIR":              cfg.StorageSecondaryDir,
 		"BACKUP_RETENTION_DELETE_ENABLED":           fmt.Sprint(cfg.RetentionDeleteEnabled),
 		"BACKUP_RETENTION_MIN_COMPLETE":             fmt.Sprint(cfg.RetentionMinComplete),
 		"BACKUP_STORAGE_RESERVE_BYTES":              fmt.Sprint(cfg.StorageReserveBytes),
@@ -746,6 +781,11 @@ func quoteEnvValue(value string) string {
 }
 
 func SaveConfig(envPath string, cfg Config) error {
+	if cfg.StorageAutoCleanup {
+		if err := storagePolicy(cfg); err != nil {
+			return err
+		}
+	}
 	path := ResolveEnvFilePath(envPath)
 	if _, e := time.LoadLocation(getMapValue(map[string]string{"zone": cfg.ScheduleTimezone}, "zone", "Local")); e != nil {
 		return fmt.Errorf("invalid schedule timezone: %w", e)

@@ -8,6 +8,10 @@ import (
 
 func cleanupOldBackups(backupDir, currentRun string, cfg config) error {
 	cfg.BackupDir = backupDir
+	if cfg.StorageAutoCleanup {
+		log.Print("local retention delegated to verified pre-capture capacity manager; legacy quarantine skipped")
+		return nil
+	}
 	if !cfg.RetentionDeleteEnabled {
 		log.Print("retention deletion HOLD: BACKUP_RETENTION_DELETE_ENABLED=false; recovery points preserved")
 		return nil

@@ -37,3 +37,7 @@ remediation/changed-files.json
 remediation/package-manifest*.json
 remediation/evidence/phase0-inventory.json
 remediation/view-definer-*.sql
+
+# Frozen automatic-storage release and private rollback configuration.
+remediation/storage-release/
+remediation/storage-rollback/

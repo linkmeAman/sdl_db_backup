@@ -185,3 +185,26 @@ Every run produces:
 See [GRAFANA_BACKUP_MONITORING.md](GRAFANA_BACKUP_MONITORING.md) for metric
 definitions and alert recommendations. For live log streaming, use the sample
 Promtail configuration in [loki/promtail-config.yml](loki/promtail-config.yml).
+
+## Storage recovery before capture
+
+The runner acquires its shared scheduler/TUI lock, measures the destination,
+estimates peak capture capacity and invokes the local storage manager before
+starting a dump. Automatic cleanup requires `BACKUP_STORAGE_AUTO_CLEANUP=true`.
+Its retention lock also excludes the legacy cleaner; when enabled, legacy
+post-capture quarantine is bypassed so it cannot fill the same filesystem.
+
+Only regular single-link eligible payloads under validated timestamp run
+folders can be unlinked through anchored directory descriptors. Deletion
+requires independently verified local protection and at least two complete
+verified S3 points; each candidate's S3 counterpart and file identity are
+rechecked immediately before deletion. Metadata survives local payload eviction
+and `local-storage-state.json` records it. Each operation has an fsynced INTENT
+and final outcome audit under `BACKUP_LOG_DIR/storage-deletions`. Interrupted
+operations re-establish current eligibility; replacement files are held.
+
+`storage-plan` uses the same protection checks and returns JSON without deleting
+artifacts. It updates only the operational status cache. A cached status never
+authorizes deletion. With sufficient capture capacity but unavailable protection
+verification, cleanup is deferred and capture continues. With insufficient
+capacity and no approved usable fallback, the run fails CRITICAL before capture.

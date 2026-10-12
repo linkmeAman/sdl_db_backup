@@ -105,6 +105,7 @@ type runRecord struct {
 	Compression                string                     `json:"compression,omitempty"`
 	Encrypted                  bool                       `json:"encrypted,omitempty"`
 	RestoreTestState           string                     `json:"restore_test_state,omitempty"`
+	StorageManagement          *StorageReport             `json:"storage_management,omitempty"`
 	Capacity                   *CapacityReport            `json:"capacity,omitempty"`
 	Timestamp                  time.Time                  `json:"timestamp"`
 	RunID                      string                     `json:"run_id"`
@@ -327,6 +328,7 @@ func BuildAPIRunResult(run RunResult) APIRunResult {
 }
 
 type HealthReport struct {
+	StorageManagement   StorageReport
 	Capacity            CapacityReport
 	Recovery            RecoveryHealth
 	ConfigPath          string
@@ -1057,12 +1059,30 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		log.Printf("no backup tasks are due for this run; continuing with preflight-only validation")
 	}
 
-	capacity, capacityErr := preflightCapacity(cfg, logicalDue)
-	record.Capacity = &capacity
-	if capacityErr != nil {
-		record.FailureReason = capacityErr.Error()
-		record.ExitCode = finalizeRun(cfg, &record, startedAt)
-		return record, nil
+	if cfg.StorageAutoCleanup && !cfg.PreflightOnly {
+		managed, managementErr := storageManagerFactory(cfg).ensure(ctx, runID, logicalDue, false)
+		record.StorageManagement = &managed
+		record.Capacity = &managed.Final
+		if managementErr != nil {
+			record.FailureReason = "CRITICAL storage recovery: " + managementErr.Error()
+			record.ExitCode = finalizeRun(cfg, &record, startedAt)
+			return record, nil
+		}
+		if managed.Destination != cfg.BackupDir {
+			cfg.BackupDir = managed.Destination
+			record.BackupDir = managed.Destination
+			stopRealtimeMetrics()
+			stopRealtimeMetrics = startRealtimeBackupMetricsEmitter(cfg, startedAt)
+		}
+		log.Printf("storage preflight state=%s available=%d required=%d reclaimed=%d protected_local=%v protected_remote=%v fallback=%s", managed.State, managed.Final.AvailableBytes, managed.Final.RequiredBytes, managed.ReclaimedBytes, managed.ProtectedLocal, managed.ProtectedRemote, managed.Fallback)
+	} else {
+		capacity, capacityErr := preflightCapacity(cfg, logicalDue)
+		record.Capacity = &capacity
+		if capacityErr != nil {
+			record.FailureReason = capacityErr.Error()
+			record.ExitCode = finalizeRun(cfg, &record, startedAt)
+			return record, nil
+		}
 	}
 	logicalPlanned := logicalDue || (cfg.PreflightOnly && cfg.LogicalEnabled)
 	physicalPlanned := physicalDue || (cfg.PreflightOnly && cfg.PhysicalEnabled && cfg.PhysicalS3UploadEnabled)

@@ -26,6 +26,20 @@ func main() {
 		fmt.Printf("run=%s state=%s databases=%d/%d remote_integrity=%s\n", r.RunID, r.RecoveryState, r.DatabasesSucceeded, r.DatabasesTotal, r.RemoteIntegrityState)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "storage-plan" {
+		cfg, err := backupapp.LoadEffectiveConfig(os.Getenv("BACKUP_ENV_FILE"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		report, err := backupapp.PlanStorageRecovery(context.Background(), cfg)
+		if encodeErr := json.NewEncoder(os.Stdout).Encode(report); encodeErr != nil {
+			log.Fatal(encodeErr)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "retention-plan" {
 		cfg, err := backupapp.LoadEffectiveConfig(os.Getenv("BACKUP_ENV_FILE"))
 		if err != nil {

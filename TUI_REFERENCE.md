@@ -729,3 +729,18 @@ reserve, and retention hold. Saving settings alone does not apply the timer.
 Health distinguishes latest complete/partial captures and verified remote
 copies from unverified recovery availability. Global bundles cannot use the
 existing per-database restore action.
+
+## Automatic storage controls and health
+
+Settings expose automatic local cleanup, high/low watermarks, recent-history
+window, growth allowance, concurrent/temporary allowances, inode minimum,
+expired-temp age, verification timeout and optional approved secondary path.
+Automatic deletion is off by default. Saving invalid safety settings is rejected.
+
+Dashboard storage health shows total/usable/free bytes, free inodes, estimated
+required capacity, SAFE/CLEANED/DEFERRED/CRITICAL state, measured reclaimed bytes,
+protected local/S3 point counts, forecast without further cleanup, fallback and
+failure details. Operational scheduler state and latest complete/partial runs
+retain their existing displays. Cached protection is observational; every actual
+deletion revalidates recovery coverage. Restore state remains separate and
+restore testing stays disabled in the deployed profile.

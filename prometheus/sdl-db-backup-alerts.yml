@@ -1,6 +1,13 @@
 groups:
   - name: sdl-db-backup
     rules:
+      - alert: SDLBackupStorageRecoveryCritical
+        expr: backup_storage_manager_critical == 1
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backup storage recovery failed"
+          description: "Eligible local cleanup and approved fallback cannot provide safe headroom; protected backups were retained."
       - alert: SDLDBBackupFailedOverall
         expr: backup_last_status{exported_job="sdl_db_backup",service="mysql",env="pilot"} == 0
         for: 5m
