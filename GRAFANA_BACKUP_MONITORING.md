@@ -1125,3 +1125,22 @@ Use the existing Prometheus and Alertmanager route for the
 required. Verify that the rule file is actually loaded before claiming alerts
 are active. Existing overall failure and stale-success alerts continue to
 cover failed and partial captures.
+
+## Automatic local storage recovery
+
+`backup_storage_auto_cleanup_enabled` reports the explicit local-payload cleanup
+control. `backup_storage_reclaimed_bytes` measures capacity reclaimed by the
+latest operation; concurrent writers can make this differ from payload size.
+`backup_storage_protected_local_points` and
+`backup_storage_protected_remote_points` expose protected coverage from storage
+inspection. Cached counts outside cleanup are observational; deletion always
+requires fresh independent integrity checks.
+
+`backup_storage_manager_critical` is 1 when storage recovery fails to provide
+safe headroom. The `SDLBackupStorageRecoveryCritical` rule uses critical
+severity. Deploy/reload the rule through the existing Prometheus/Alertmanager
+workflow; this source change alone does not prove notification delivery.
+Storage state, protection IDs, verification timestamps, decisions, fallback and
+forecast are also available in the TUI and `storage-status.json`. The forecast
+estimates days until headroom is exhausted if no further cleanup occurs; it is
+not a promise against unrelated filesystem growth or S3 outages.

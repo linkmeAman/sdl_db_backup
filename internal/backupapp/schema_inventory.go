@@ -33,11 +33,15 @@ func artifactObjectInventory(path, defaultDB, key string) (map[string]map[string
 		return nil, e
 	}
 	defer gz.Close()
-	reader := bufio.NewReaderSize(gz, 64<<10)
+	return readArtifactObjectInventory(gz, defaultDB)
+}
+
+func readArtifactObjectInventory(source io.Reader, defaultDB string) (map[string]map[string][]string, error) {
+	reader := bufio.NewReaderSize(source, 64<<10)
 	db := defaultDB
 	result := map[string]map[string][]string{}
 	for {
-		line, e := reader.ReadString('\n')
+		line, e := storageSQLPrefixLine(reader)
 		if e != nil && e != io.EOF {
 			return nil, e
 		}
@@ -97,4 +101,20 @@ func compareObjectInventory(db string, expected, actual map[string][]string) err
 		}
 	}
 	return nil
+}
+
+// Keep only a bounded statement prefix; consume large INSERT lines without
+// buffering their contents. The surrounding TeeReader still hashes every byte.
+func storageSQLPrefixLine(reader *bufio.Reader) (string, error) {
+	prefix := make([]byte, 0, 64<<10)
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		room := (64 << 10) - len(prefix)
+		if room > 0 {
+			prefix = append(prefix, chunk[:min(room, len(chunk))]...)
+		}
+		if err != bufio.ErrBufferFull {
+			return string(prefix), err
+		}
+	}
 }

@@ -43,6 +43,11 @@ func metricsLabelString(cfg config) string {
 }
 
 type backupMetricsSnapshot struct {
+	StorageReclaimed            uint64
+	StorageProtectedLocal       int
+	StorageProtectedRemote      int
+	StorageManagerCritical      int
+	StorageAutoEnabled          int
 	CapacityAvailable           uint64
 	CapacityRequired            uint64
 	CapacitySufficient          int
@@ -214,6 +219,7 @@ func buildInProgressBackupMetricsSnapshot(cfg config, startedAt time.Time) backu
 	previous.CurrentRunDurationSeconds = time.Since(startedAt).Seconds()
 	previous.MetricsLastUpdateTimestamp = now.Unix()
 	applyCurrentCapacity(cfg, &previous)
+	applyStorageManagerMetrics(cfg, &previous, nil)
 	return previous
 }
 
@@ -418,6 +424,11 @@ func writeBackupMetricsFile(path string, snapshot backupMetricsSnapshot, labels 
 		Help  string
 		Value string
 	}{
+		{Name: "backup_storage_reclaimed_bytes", Help: "Bytes actually reclaimed by the latest storage operation.", Value: strconv.FormatUint(snapshot.StorageReclaimed, 10)},
+		{Name: "backup_storage_protected_local_points", Help: "Local capture points protected by the storage policy.", Value: strconv.Itoa(snapshot.StorageProtectedLocal)},
+		{Name: "backup_storage_protected_remote_points", Help: "Independently verified offsite points protected during the last full storage inspection.", Value: strconv.Itoa(snapshot.StorageProtectedRemote)},
+		{Name: "backup_storage_manager_critical", Help: "Storage recovery failed without sufficient safe capture headroom.", Value: strconv.Itoa(snapshot.StorageManagerCritical)},
+		{Name: "backup_storage_auto_cleanup_enabled", Help: "Authorized automatic local payload cleanup is enabled.", Value: strconv.Itoa(snapshot.StorageAutoEnabled)},
 		{Name: "backup_storage_available_bytes", Help: "Available capture volume capacity.", Value: strconv.FormatUint(snapshot.CapacityAvailable, 10)},
 		{Name: "backup_storage_required_bytes", Help: "Estimated capture plus protected reserve.", Value: strconv.FormatUint(snapshot.CapacityRequired, 10)},
 		{Name: "backup_storage_capacity_sufficient", Help: "One only when the capture fits the safety reserve.", Value: strconv.Itoa(snapshot.CapacitySufficient)},
@@ -708,6 +719,7 @@ func validateMetricsPathWritable(path string) error {
 
 func emitFinalBackupMetrics(cfg config, record runRecord, startedAt time.Time, logicalDue bool, physicalDue bool, uploadRequired bool, uploadSucceeded bool) {
 	snapshot := buildFinalBackupMetricsSnapshot(cfg, record, startedAt, logicalDue, physicalDue, uploadRequired, uploadSucceeded)
+	applyStorageManagerMetrics(cfg, &snapshot, record.StorageManagement)
 	if record.Capacity != nil {
 		snapshot.CapacityAvailable = record.Capacity.AvailableBytes
 		snapshot.CapacityRequired = record.Capacity.RequiredBytes
@@ -799,5 +811,23 @@ func applyCurrentCapacity(cfg config, snapshot *backupMetricsSnapshot) {
 	snapshot.RetentionDeletionEnabled = 0
 	if cfg.RetentionDeleteEnabled {
 		snapshot.RetentionDeletionEnabled = 1
+	}
+}
+
+func applyStorageManagerMetrics(cfg config, snapshot *backupMetricsSnapshot, report *StorageReport) {
+	if report == nil {
+		stored := readStorageReport(cfg)
+		report = &stored
+	}
+	snapshot.StorageReclaimed = report.ReclaimedBytes
+	snapshot.StorageProtectedLocal = len(report.ProtectedLocal)
+	snapshot.StorageProtectedRemote = len(report.ProtectedRemote)
+	snapshot.StorageManagerCritical = 0
+	if report.State == "CRITICAL" {
+		snapshot.StorageManagerCritical = 1
+	}
+	snapshot.StorageAutoEnabled = 0
+	if cfg.StorageAutoCleanup {
+		snapshot.StorageAutoEnabled = 1
 	}
 }

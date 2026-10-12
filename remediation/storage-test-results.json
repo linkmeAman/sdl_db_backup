@@ -1,0 +1,78 @@
+{
+  "recorded_at": "2026-10-12T14:54:38.999585+00:00",
+  "go_regression": {
+    "command": "GOCACHE=/tmp/sdl-remediation-go-cache GOTMPDIR=/tmp go test ./...",
+    "state": "PASSED",
+    "backupapp_seconds": 17.275
+  },
+  "go_race": {
+    "command": "GOCACHE=/tmp/sdl-remediation-go-cache GOTMPDIR=/tmp go test -race ./...",
+    "state": "PASSED",
+    "backupapp_seconds": 66.288
+  },
+  "go_vet": {
+    "command": "GOCACHE=/tmp/sdl-remediation-go-cache GOTMPDIR=/tmp go vet ./...",
+    "state": "PASSED"
+  },
+  "deployment_transaction_tests": {
+    "command": "python3 remediation/test_deploy_storage_manager.py",
+    "state": "PASSED",
+    "count": 5
+  },
+  "storage_tests": [
+    "TestStoragePressureDeletesOldestStopsAndKeepsLatestTwo",
+    "TestStorageOnlyProtectedInsufficientDoesNotSacrificePoint",
+    "TestStorageMayUseSecondLatestOnlyWhenItCanFitNextCapture",
+    "TestStorageRemoteFailureBlocksDeletion",
+    "TestStorageRemoteOutageWithAdequateHeadroomDoesNotBlockCapture",
+    "TestStorageTemporaryAndPartialDuplicatesPrecedeComplete",
+    "TestStorageUniquePartialAndRestoreTestedAndDependenciesHeld",
+    "TestStoragePhysicalComponentsAndCurrentRunNeverDeleted",
+    "TestStorageUnlinkRejectsSymlinksHardlinksAndChangedFiles",
+    "TestStorageCrashIntentReconcilesWithoutDeletingReplacement",
+    "TestStorageCrashAfterUnlinkAcknowledgesMissingFile",
+    "TestStorageS3FullIntegrityAndMissingObjects",
+    "TestStorageConcurrentSchedulerAndCleanup",
+    "TestStorageThirtyDaysFiveDailyCapturesPreserveCoverage",
+    "TestStorageEstimateGrowthAndOverflow",
+    "TestStorageNoCandidatesNoFallbackCritical",
+    "TestStorageDryRunDoesNotDelete",
+    "TestStorageScheduledLowSpaceCleanupThenCompleteSixDatabaseS3Backup",
+    "TestStorageS3OutageOnApprovedFallbackFailsWithoutRemoteCompletion",
+    "TestStorageDiskExhaustionDuringDumpPreservesPreviousPoints",
+    "TestStorageReserveRechecksDuringLongWrite",
+    "TestStorageLargerRecentCaptureRaisesNextEstimate",
+    "TestStorageInvalidWatermarksRejectedBeforeConfigSave",
+    "TestStorageCriticalPreflightFinalizesFailedRunAndAlertMetric"
+  ],
+  "simulation": {
+    "days": 30,
+    "captures": 150,
+    "slots": [
+      "02:00",
+      "06:00",
+      "12:00",
+      "16:00",
+      "18:00"
+    ],
+    "state": "PASSED"
+  },
+  "low_space_scheduled_capture": {
+    "state": "PASSED",
+    "required_databases": 6,
+    "capture": "shared transaction fixture",
+    "s3": "independently full-payload verified fixture",
+    "protected_local": 2
+  },
+  "production_data_used_for_simulation": false,
+  "deployed_tree_regression": {
+    "command": "GOCACHE=/tmp/sdl-remediation-go-cache GOTMPDIR=/tmp go test ./...",
+    "state": "PASSED",
+    "backupapp_seconds": 20.378
+  },
+  "critical_failure_integration": {
+    "state": "PASSED",
+    "command": "GOCACHE=/tmp/sdl-remediation-go-cache GOTMPDIR=/tmp go test -race ./internal/backupapp -run TestStorageCriticalPreflight -count=1",
+    "result": "failed run, FAILED recovery state, nonzero exit, emitted critical metric and protected payload preservation"
+  }
+}

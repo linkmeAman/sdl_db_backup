@@ -1,0 +1,84 @@
+{
+  "observed_at": "2026-10-12T15:06:13.227915+00:00",
+  "run_id": "2026-10-12_20-21-17",
+  "destination": "s3://ticklerightbackups/recovery-hold/logical/2026-10-12_20-21-17/",
+  "marker_status": "COMPLETE",
+  "manifest_state": "COMPLETE",
+  "expected_databases_match": true,
+  "six_complete_results": true,
+  "duration": "10m42.634s",
+  "capture_duration": "5m13.076s",
+  "consistency_method": "single mysqldump transaction across all selected InnoDB databases; DDL excluded by policy",
+  "restore_state": "UNVERIFIED",
+  "artifacts": [
+    {
+      "key": "all-databases.sql.gz",
+      "bytes": 1078484392,
+      "remote_size_match": true,
+      "remote_sha256_match": true,
+      "local_size_match": true,
+      "local_sha256_match": true,
+      "server_side_encryption": "AES256"
+    },
+    {
+      "key": "manifest.json",
+      "bytes": 54227,
+      "remote_size_match": true,
+      "remote_sha256_match": true,
+      "local_size_match": true,
+      "local_sha256_match": true,
+      "server_side_encryption": "AES256"
+    }
+  ],
+  "marker_artifact_inventory_match": true,
+  "remote_inventory_match": true,
+  "gzip_integrity": "VERIFIED",
+  "dump_footer_present": true,
+  "sql_sha256_match_all_results": true,
+  "expected_object_counts": {
+    "bk_pf_TickleRight_9210": {
+      "event": 0,
+      "routine": 0,
+      "table": 3,
+      "trigger": 0,
+      "view": 0
+    },
+    "bk_pf_messenger": {
+      "event": 0,
+      "routine": 0,
+      "table": 36,
+      "trigger": 0,
+      "view": 0
+    },
+    "pf_TickleRight_9210": {
+      "event": 0,
+      "routine": 0,
+      "table": 655,
+      "trigger": 13,
+      "view": 375
+    },
+    "pf_central": {
+      "event": 0,
+      "routine": 0,
+      "table": 140,
+      "trigger": 0,
+      "view": 7
+    },
+    "pf_messenger": {
+      "event": 0,
+      "routine": 0,
+      "table": 42,
+      "trigger": 0,
+      "view": 0
+    },
+    "pf_messenger_dev": {
+      "event": 0,
+      "routine": 0,
+      "table": 45,
+      "trigger": 0,
+      "view": 0
+    }
+  },
+  "capture_and_remote_integrity_verdict": "VERIFIED",
+  "verification_finished_at": "2026-10-12T15:07:31.892511+00:00"
+}

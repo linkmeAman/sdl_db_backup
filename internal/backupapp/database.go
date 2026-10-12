@@ -195,7 +195,7 @@ func removePartialOutput(path string) {
 	if path == "" {
 		return
 	}
-	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
 		target := path + ".incomplete-" + time.Now().UTC().Format("20060102T150405.000000000")
 		if err := os.Rename(path, target); err != nil {
 			log.Printf("failed to preserve incomplete artifact %s: %v", path, err)

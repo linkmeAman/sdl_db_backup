@@ -1,0 +1,168 @@
+{
+  "at": "2026-10-12T15:06:13.766658184Z",
+  "state": "DRY_RUN",
+  "dry_run": true,
+  "initial": {
+    "available_bytes": 41430306816,
+    "total_bytes": 332805349376,
+    "usable_bytes": 332788572160,
+    "free_inodes": 39268279,
+    "total_inodes": 41287680,
+    "required_inodes": 128,
+    "used_percent": 87.55056204391511,
+    "estimated_capture_bytes": 2423032956,
+    "reserve_bytes": 2147483648,
+    "required_bytes": 4570516604,
+    "sufficient": true,
+    "filesystem_id": 64513
+  },
+  "final": {
+    "available_bytes": 41430306816,
+    "total_bytes": 332805349376,
+    "usable_bytes": 332788572160,
+    "free_inodes": 39268279,
+    "total_inodes": 41287680,
+    "required_inodes": 128,
+    "used_percent": 87.55056204391511,
+    "estimated_capture_bytes": 2423032956,
+    "reserve_bytes": 2147483648,
+    "required_bytes": 4570516604,
+    "sufficient": true,
+    "filesystem_id": 64513
+  },
+  "target_bytes": 33278857216,
+  "reclaimed_bytes": 0,
+  "removed_payload_bytes": 0,
+  "protected_local": [
+    "2026-10-12_20-21-17",
+    "2026-10-12_18-00-03"
+  ],
+  "protected_remote": [
+    "2026-10-12_20-21-17",
+    "2026-10-12_18-00-03"
+  ],
+  "remote_proofs": [
+    {
+      "run_id": "2026-10-12_20-21-17",
+      "destination": "s3://ticklerightbackups/recovery-hold/logical/2026-10-12_20-21-17",
+      "verified_at": "2026-10-12T15:12:06.207961477Z",
+      "state": "VERIFIED",
+      "restore_state": "UNVERIFIED",
+      "manifest_sha256": "8edc69d4e9c92c052ed24c5081d1f392140ad8d4dce22f74e49033cd7e30201c",
+      "objects": [
+        {
+          "key": "recovery-hold/logical/2026-10-12_20-21-17/manifest.json",
+          "size_bytes": 54227,
+          "sha256": "8edc69d4e9c92c052ed24c5081d1f392140ad8d4dce22f74e49033cd7e30201c",
+          "etag": "\"84c587826ef3732314e793a9dd310ad2\"",
+          "last_modified": "Mon, 12 Oct 2026 15:02:00 GMT"
+        },
+        {
+          "key": "recovery-hold/logical/2026-10-12_20-21-17/all-databases.sql.gz",
+          "size_bytes": 1078484392,
+          "sha256": "6ef6c493ce371da58ee026b0dc35f747538c8b0f60d4406ace48ccc3d7f44657",
+          "etag": "\"0a616c2893064f449868fc161768c208-65\"",
+          "last_modified": "Mon, 12 Oct 2026 15:01:25 GMT"
+        }
+      ]
+    },
+    {
+      "run_id": "2026-10-12_18-00-03",
+      "destination": "s3://ticklerightbackups/recovery-hold/logical/2026-10-12_18-00-03",
+      "verified_at": "2026-10-12T15:13:18.546741166Z",
+      "state": "VERIFIED",
+      "restore_state": "UNVERIFIED",
+      "manifest_sha256": "325316059b1eadc2e9b12eb8c6268487fb7a4ae57c7fd99b3e8a8ddd4f623529",
+      "objects": [
+        {
+          "key": "recovery-hold/logical/2026-10-12_18-00-03/manifest.json",
+          "size_bytes": 50200,
+          "sha256": "325316059b1eadc2e9b12eb8c6268487fb7a4ae57c7fd99b3e8a8ddd4f623529",
+          "etag": "\"c62b9253fb95d6de5b8dd3149cce5818\"",
+          "last_modified": "Mon, 12 Oct 2026 12:41:34 GMT"
+        },
+        {
+          "key": "recovery-hold/logical/2026-10-12_18-00-03/all-databases.sql.gz",
+          "size_bytes": 1078225124,
+          "sha256": "3893a30757e7328b774425b07c4332dc3b0124bcfde79147bd16769313b59d11",
+          "etag": "\"f02c35630e3357458fd08dc5776b4435-65\"",
+          "last_modified": "Mon, 12 Oct 2026 12:41:02 GMT"
+        }
+      ]
+    },
+    {
+      "run_id": "2026-10-12_17-26-25",
+      "destination": "s3://ticklerightbackups/recovery-hold/logical/2026-10-12_17-26-25",
+      "verified_at": "2026-10-12T15:14:30.102878367Z",
+      "state": "VERIFIED",
+      "restore_state": "UNVERIFIED",
+      "manifest_sha256": "5b0c10a0a288cd9a92ec423edaf83f8f46e38aac93be8b2fd8e5dc87ec97c066",
+      "objects": [
+        {
+          "key": "recovery-hold/logical/2026-10-12_17-26-25/manifest.json",
+          "size_bytes": 50203,
+          "sha256": "5b0c10a0a288cd9a92ec423edaf83f8f46e38aac93be8b2fd8e5dc87ec97c066",
+          "etag": "\"ae37aa9d491d761d141d593f67df5106\"",
+          "last_modified": "Mon, 12 Oct 2026 12:08:22 GMT"
+        },
+        {
+          "key": "recovery-hold/logical/2026-10-12_17-26-25/all-databases.sql.gz",
+          "size_bytes": 1078155104,
+          "sha256": "3b8cb292b6f0bcf906166036cb5232a506d4b064229a53efbd7d460c27e807c1",
+          "etag": "\"7f25c30a3001ef11b4359dc112436602-65\"",
+          "last_modified": "Mon, 12 Oct 2026 12:07:49 GMT"
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "run_id": "2026-10-12_20-21-17",
+      "path": "/var/www/go-workspace/sdl/sdl_db_backup/remediation/production-backups/2026-10-12_20-21-17/all-databases.sql.gz",
+      "name": "all-databases.sql.gz",
+      "backup_type": "logical",
+      "action": "KEEP",
+      "reason": "protected complete local recovery point",
+      "size_bytes": 1078484392,
+      "sha256": "6ef6c493ce371da58ee026b0dc35f747538c8b0f60d4406ace48ccc3d7f44657",
+      "device": 64513,
+      "inode": 4914968,
+      "modified_ns": 1791816934305893932,
+      "changed_ns": 1791816934305893932
+    },
+    {
+      "run_id": "2026-10-12_18-00-03",
+      "path": "/var/www/go-workspace/sdl/sdl_db_backup/remediation/production-backups/2026-10-12_18-00-03/all-databases.sql.gz",
+      "name": "all-databases.sql.gz",
+      "backup_type": "logical",
+      "action": "KEEP",
+      "reason": "protected complete local recovery point",
+      "size_bytes": 1078225124,
+      "sha256": "3893a30757e7328b774425b07c4332dc3b0124bcfde79147bd16769313b59d11",
+      "device": 64513,
+      "inode": 4914360,
+      "modified_ns": 1791808465870420218,
+      "changed_ns": 1791808465870420218
+    },
+    {
+      "run_id": "2026-10-12_17-26-25",
+      "path": "/var/www/go-workspace/sdl/sdl_db_backup/remediation/production-backups/2026-10-12_17-26-25/all-databases.sql.gz",
+      "name": "all-databases.sql.gz",
+      "backup_type": "complete_logical",
+      "action": "ELIGIBLE",
+      "reason": "obsolete local duplicate with independently verified complete S3 counterpart",
+      "size_bytes": 1078155104,
+      "sha256": "3b8cb292b6f0bcf906166036cb5232a506d4b064229a53efbd7d460c27e807c1",
+      "remote_run_id": "2026-10-12_17-26-25",
+      "remote_counterpart": "s3://ticklerightbackups/recovery-hold/logical/2026-10-12_17-26-25",
+      "device": 64513,
+      "inode": 4914341,
+      "modified_ns": 1791806461349679167,
+      "changed_ns": 1791806461349679167
+    }
+  ],
+  "destination": "/var/www/go-workspace/sdl/sdl_db_backup/remediation/production-backups",
+  "fallback": "DISABLED",
+  "forecast_days": 6.860189077177324,
+  "protection_checked": true
+}

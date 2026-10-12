@@ -42,6 +42,8 @@ func renderHealthReport(report backupapp.HealthReport) string {
 		}
 	}
 	fmt.Fprintln(&out)
+	fmt.Fprintf(&out, "Storage: total=%d available=%d required=%d free_inodes=%d safe=%t\n", report.Capacity.TotalBytes, report.Capacity.AvailableBytes, report.Capacity.RequiredBytes, report.Capacity.FreeInodes, report.Capacity.Sufficient)
+	fmt.Fprintf(&out, "Storage recovery: state=%s reclaimed=%d protected_local=%v protected_remote=%v fallback=%s forecast_without_cleanup_days=%.1f detail=%s\n", report.StorageManagement.State, report.StorageManagement.ReclaimedBytes, report.StorageManagement.ProtectedLocal, report.StorageManagement.ProtectedRemote, report.StorageManagement.Fallback, report.StorageManagement.ForecastDays, report.StorageManagement.Error)
 
 	if report.LatestRun == nil {
 		fmt.Fprintln(&out, "Latest Run: none recorded yet")

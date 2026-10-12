@@ -110,3 +110,12 @@ Follow-up findings and corrections: the privileged timer helper initially replac
 Final deployment rollback journal: `remediation/rollback/20261012T181355`. The earlier original-package journal remains `remediation/rollback/20261012T171812`. Original remote manifests for the 17:26 and 18:00 runs were preserved unchanged; their remote duration field predates the ordering fix and is empty. Full measured durations remain in each preserved local finalization audit and run history. Future runs populate duration before freezing the uploaded manifest.
 
 The physical checksum path follows Percona's documented `backup_name.md5` convention ([xbcloud 8.0 documentation](https://docs.percona.com/percona-xtrabackup/8.0/xbcloud-binary-overview.html)). It is fixture-tested and supported by the installed binary help; an actual new physical capture/verification remains unverified.
+
+## Subsequent automatic local storage rollout
+
+The earlier hold-only storage profile above describes the initial remediation.
+The operator subsequently authorized eligible local payload deletion under disk
+pressure. See [the storage rollout](STORAGE_RECOVERY.md) and
+[the current deployed configuration](../PRODUCTION_CONFIGURATION.md) for the
+new pre-capture policy, protection evidence, tests and rollback. Remote deletion
+and restore testing remain disabled. Original-volume backups remain untouched.

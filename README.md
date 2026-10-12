@@ -409,3 +409,45 @@ cleanup, validation, adaptive parallelism, and physical retry state.
 Run `./tests/integration/run.sh` with Docker and Compose v2 to test MySQL,
 PostgreSQL, encryption, MinIO completion markers, and isolated restores. See the
 [integration test guide](tests/integration/README.md) for coverage and diagnostics.
+
+## Automatic local storage recovery
+
+`BACKUP_STORAGE_AUTO_CLEANUP=true` enables authorized pre-capture deletion of
+obsolete local payloads. It is independent of legacy GFS quarantine and never
+removes S3 objects. Default is false. Preview against the actual configuration:
+
+```bash
+BACKUP_ENV_FILE=.env ./sdl-db-backup storage-plan
+```
+
+Before deleting, the manager independently reads and verifies two complete S3
+recovery points and the candidate's counterpart, including every listing page,
+SHA-256, gzip/decryption, SQL hash, footer and expected schema inventory.
+Successful integrity checks do not establish restore success. The newest valid
+complete local point always remains; the next newest is preserved when capacity
+permits. Pinned/restore-tested points, physical components, binlog dependencies,
+unknown legacy artifacts and uniquely useful partials remain protected.
+
+Pressure begins at the configured high watermark or insufficient projected
+capture capacity. Cleanup stops at the larger of capture requirements and the
+low-watermark target. Order: expired safely disposable failed temporary files,
+exact duplicate partial payloads, oldest eligible complete logical payloads.
+Capacity is measured again after every unlink. Manifests, keys and configuration
+remain. A shared run lock and retention lock prevent overlapping operations;
+atomic per-file INTENT/outcome journals make interrupted cleanup recoverable.
+
+The estimate uses the maximum recent complete compressed capture plus growth,
+concurrent-write and temporary-space allowances, with a separate safety reserve
+and inode threshold. Active dump writes recheck the reserve every 16 MiB.
+Unexpected disk exhaustion fails honestly and preserves incomplete artifacts.
+With no approved usable secondary destination, insufficient safe capacity emits
+CRITICAL and preserves protected recovery points. Logical remote-only streaming
+is not enabled: capture/object validation currently depends on staged files.
+Physical capture retains its existing streaming workflow and its work directory
+receives a separate capacity gate; no physical component is automatically purged.
+
+The manifest, health CLI, TUI and metrics expose capacity, decisions, reclaimed
+space, protected points and the forecast without further cleanup. Deletion audits
+are under `BACKUP_LOG_DIR/storage-deletions/`; latest health is in
+`BACKUP_LOG_DIR/storage-status.json`. See
+[production storage evidence and rollback](remediation/STORAGE_RECOVERY.md).

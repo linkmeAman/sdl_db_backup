@@ -324,6 +324,15 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 	if workDir == "" {
 		workDir = "/mnt/volume_1/backup/xtrabackup-tmp"
 	}
+	// Physical capture already streams remotely; account only for bounded local
+	// control/FIFO files. Never delete physical components to make space.
+	physicalCapacity, physicalCapacityErr := inspectCapacity(workDir, uint64(16<<20)+uint64(max(0, cfg.StorageConcurrentBytes))+uint64(max(0, cfg.StorageTemporaryBytes)), uint64(max(0, cfg.StorageReserveBytes)))
+	if physicalCapacityErr != nil || !physicalCapacity.Sufficient || physicalCapacity.FreeInodes < uint64(max(1, cfg.StorageMinFreeInodes)) {
+		result.Error = "CRITICAL physical working filesystem lacks safe capacity; physical components retained"
+		result.Duration = time.Since(started).Round(time.Millisecond).String()
+		log.Print(result.Error)
+		return result
+	}
 	xtrabackupCmd.Dir = workDir
 
 	streamOut, streamWrite, err := os.Pipe()

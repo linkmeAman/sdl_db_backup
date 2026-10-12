@@ -1,0 +1,13 @@
+{
+  "observed_at": "2026-10-12T15:19:14.275363+00:00",
+  "free_bytes": 41361891328,
+  "total_bytes": 332805349376,
+  "free_inodes": 39268313,
+  "required_bytes": 4570516604,
+  "latest_capture_bytes": 1078484392,
+  "captures_per_day": 5,
+  "nominal_daily_local_accumulation_bytes": 5392421960,
+  "forecast_without_cleanup_days": 6.82279224380282,
+  "high_watermark_first_cleanup_days": 2.7332441089606423,
+  "physical_work_directory_free_bytes": 3177807872
+}

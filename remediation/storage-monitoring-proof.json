@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-10-12T15:22:38.467180+00:00",
+  "scraped_metrics": {
+    "backup_storage_auto_cleanup_enabled": [
+      "1"
+    ],
+    "backup_storage_manager_critical": [
+      "0"
+    ],
+    "backup_storage_capacity_sufficient": [
+      "1"
+    ],
+    "backup_storage_available_bytes": [
+      "42630959104"
+    ],
+    "backup_storage_required_bytes": [
+      "4570127702"
+    ],
+    "backup_last_status": [
+      "1"
+    ]
+  },
+  "storage_rule_loaded": false,
+  "active_alertmanager_count": 1,
+  "notification_delivery": "UNVERIFIED",
+  "rule_installation": "BLOCKED_OPERATOR_ROOT_REQUIRED"
+}
