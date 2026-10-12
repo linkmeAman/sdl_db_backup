@@ -1,0 +1,18 @@
+{
+  "state": "VERIFIED",
+  "mismatched_files": [],
+  "env_readable": true,
+  "env_mode": "0o600",
+  "env_owner_uid": 1000,
+  "deployed_files": 38,
+  "rollback": "remediation/rollback/20261012T181355",
+  "revision": "immutable-committed-manifest",
+  "configuration_checks": {
+    "BACKUP_LOGICAL_CONSISTENCY": "global",
+    "BACKUP_RETENTION_DELETE_ENABLED": "false",
+    "BACKUP_SYSTEMD_SCOPE": "system",
+    "BACKUP_SCHEDULE_TIMEZONE": "Asia/Kolkata",
+    "BACKUP_ALLOW_OBJECT_OMISSIONS": "false",
+    "RESTORE_TEST_ENABLED": "false"
+  }
+}

@@ -653,7 +653,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.draft = msg.cfg
 			m.fields = buildConfigFields(msg.cfg)
 			m.dirty = false
-			m.pushToast("ok", ".env saved")
+			m.pushToast("ok", ".env saved; verify timer drift and explicitly apply schedule")
 			cmds = append(cmds, loadHealth(m.envPath), loadTemporaryOverrides(m.envPath))
 		}
 	case reloadConfigMsg:

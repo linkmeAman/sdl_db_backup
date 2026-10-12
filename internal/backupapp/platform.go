@@ -94,7 +94,7 @@ func schedulerContext(currentUser string, executionSource string) string {
 	case source == "runner" && strings.TrimSpace(currentUser) == "root":
 		return "root scheduled runner (blocked)"
 	case source == "runner":
-		return "user-level scheduled runner"
+		return "scheduled runner under a non-root service account"
 	case source == "tui":
 		return "interactive TUI/manual invocation"
 	case source == "api":
@@ -127,7 +127,7 @@ func GetRuntimeProfile(envPath string) (RuntimeProfile, error) {
 		APIServerListenAddr: cfg.APIListenAddr,
 		APIAuthEnabled:      cfg.APIAuthEnabled,
 		SchedulerContext:    schedulerContext(currentOSUser(), cfg.ExecutionSource),
-		SchedulerGuidance:   "Use only a user-level systemd timer/service for scheduled runs. Manual shell and alternate runner paths should not be scheduled.",
+		SchedulerGuidance:   "Use the authoritative configured systemd scope with a non-root service account and one shared lock path.",
 		AuditChecklist:      runtimeAuditChecklist(),
 	}
 	if !profile.NonRoot {
@@ -223,7 +223,7 @@ func MaskedConfigView(cfg Config) map[string]interface{} {
 	masked := make(map[string]interface{}, len(values))
 	for key, value := range values {
 		switch key {
-		case "DB_PASS", "RESTORE_TEST_PASS", "BACKUP_S3_KEY_ID", "BACKUP_S3_KEY_SECRET", "BACKUP_XTRABACKUP_PASS", "BACKUP_API_BEARER_TOKEN":
+		case "DB_PASS", "RESTORE_TEST_PASS", "BACKUP_S3_KEY_ID", "BACKUP_S3_KEY_SECRET", "BACKUP_XTRABACKUP_PASS", "BACKUP_API_BEARER_TOKEN", "BACKUP_ENCRYPTION_KEY":
 			if strings.TrimSpace(value) == "" {
 				masked[key] = ""
 			} else {
@@ -276,6 +276,9 @@ func RenderUserSystemdUnits(envPath string) (ServiceRenderResult, error) {
 		"WantedBy=timers.target",
 		"",
 	}, "\n")
+	if desired, e := RenderTimerFromConfig(cfg); e == nil {
+		timer = desired
+	}
 	return ServiceRenderResult{
 		ServiceUnitName: cfg.ServiceUnitName,
 		TimerUnitName:   cfg.TimerUnitName,

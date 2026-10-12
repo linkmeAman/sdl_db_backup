@@ -1,0 +1,38 @@
+{
+  "run_id": "2026-10-12_12-00-01",
+  "manifest_status": "partial",
+  "observed_at": "2026-10-12T08:07:32.543273+00:00",
+  "artifacts": [
+    {
+      "key": "logical/2026-10-12_12-00-01/bk_pf_TickleRight_9210.sql.gz",
+      "bytes": 37870324,
+      "sha256_match": true,
+      "size_match": true
+    },
+    {
+      "key": "logical/2026-10-12_12-00-01/bk_pf_messenger.sql.gz",
+      "bytes": 18152575,
+      "sha256_match": true,
+      "size_match": true
+    },
+    {
+      "key": "logical/2026-10-12_12-00-01/pf_central.sql.gz",
+      "bytes": 173297177,
+      "sha256_match": true,
+      "size_match": true
+    },
+    {
+      "key": "logical/2026-10-12_12-00-01/pf_messenger.sql.gz",
+      "bytes": 16409478,
+      "sha256_match": true,
+      "size_match": true
+    },
+    {
+      "key": "logical/2026-10-12_12-00-01/pf_messenger_dev.sql.gz",
+      "bytes": 16099359,
+      "sha256_match": true,
+      "size_match": true
+    }
+  ],
+  "oct10_versions_error": "AccessDenied"
+}

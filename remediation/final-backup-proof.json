@@ -1,0 +1,79 @@
+{
+  "observed_at": "2026-10-12T11:16:22.354836+00:00",
+  "run_id": "2026-10-12_14-23-04",
+  "marker_status": "COMPLETE",
+  "marker_version": 2,
+  "expected_databases_match": true,
+  "manifest_status": "success",
+  "six_successes": true,
+  "consistency_method": "single mysqldump transaction across all selected InnoDB databases; DDL excluded by policy",
+  "expected_object_counts": {
+    "bk_pf_TickleRight_9210": {
+      "event": 0,
+      "routine": 0,
+      "table": 3,
+      "trigger": 0,
+      "view": 0
+    },
+    "bk_pf_messenger": {
+      "event": 0,
+      "routine": 0,
+      "table": 36,
+      "trigger": 0,
+      "view": 0
+    },
+    "pf_TickleRight_9210": {
+      "event": 0,
+      "routine": 0,
+      "table": 655,
+      "trigger": 13,
+      "view": 375
+    },
+    "pf_central": {
+      "event": 0,
+      "routine": 0,
+      "table": 140,
+      "trigger": 0,
+      "view": 7
+    },
+    "pf_messenger": {
+      "event": 0,
+      "routine": 0,
+      "table": 42,
+      "trigger": 0,
+      "view": 0
+    },
+    "pf_messenger_dev": {
+      "event": 0,
+      "routine": 0,
+      "table": 42,
+      "trigger": 0,
+      "view": 0
+    }
+  },
+  "artifacts": [
+    {
+      "key": "all-databases.sql.gz",
+      "size": 1077237129,
+      "size_match": true,
+      "sha256_match": true,
+      "server_side_encryption": "AES256",
+      "sse_kms_key_present": false
+    },
+    {
+      "key": "manifest.json",
+      "size": 50179,
+      "size_match": true,
+      "sha256_match": true,
+      "server_side_encryption": "AES256",
+      "sse_kms_key_present": false
+    }
+  ],
+  "restore_state": "UNVERIFIED",
+  "production_global_max_execution_time_ms": 30000,
+  "view_security": [
+    "developer@%",
+    "DEFINER"
+  ],
+  "capture_and_remote_integrity_verdict": "VERIFIED"
+}

@@ -21,13 +21,17 @@ import (
 const physicalCompletionObject = "PHYSICAL_COMPLETED.json"
 
 type physicalCompletionManifest struct {
-	FormatVersion int       `json:"format_version"`
-	CompletedAt   time.Time `json:"completed_at"`
-	RunID         string    `json:"run_id"`
-	Bucket        string    `json:"bucket"`
-	ObjectKey     string    `json:"object_key"`
-	SizeBytes     int64     `json:"size_bytes"`
-	ETag          string    `json:"etag,omitempty"`
+	Status          string           `json:"status"`
+	IntegrityMethod string           `json:"integrity_method"`
+	RestoreState    string           `json:"restore_state"`
+	Artifacts       []remoteArtifact `json:"artifacts"`
+	FormatVersion   int              `json:"format_version"`
+	CompletedAt     time.Time        `json:"completed_at"`
+	RunID           string           `json:"run_id"`
+	Bucket          string           `json:"bucket"`
+	ObjectKey       string           `json:"object_key"`
+	SizeBytes       int64            `json:"size_bytes"`
+	ETag            string           `json:"etag,omitempty"`
 }
 
 func isPhysicalUploadRateLimited(message string) bool {
@@ -230,19 +234,8 @@ func runPhysicalBackup(cfg config, runDir string) physicalBackupResult {
 			return result
 		}
 
-		rateLimitRetries++
-		result.RateLimitRetries = rateLimitRetries
-		delay := retryDelay(cfg, attempt)
-		if delay >= remaining {
-			return result
-		}
-		log.Printf(
-			"physical backup: xbcloud/S3 rate limited attempt=%d/%d; retrying in %s with lower parallelism",
-			attempt,
-			maxAttempts,
-			delay,
-		)
-		time.Sleep(delay)
+		log.Print("physical attempt preserved after failure; xbcloud chunk retries exhausted; a new run ID is required")
+		return result
 	}
 
 	return physicalBackupResult{
@@ -333,7 +326,12 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 	}
 	xtrabackupCmd.Dir = workDir
 
-	streamOut, err := xtrabackupCmd.StdoutPipe()
+	streamOut, streamWrite, err := os.Pipe()
+	if err == nil {
+		xtrabackupCmd.Stdout = streamWrite
+		defer streamOut.Close()
+		defer streamWrite.Close()
+	}
 	if err != nil {
 		result.Error = fmt.Sprintf("xtrabackup stdout pipe: %v", err)
 		result.Duration = time.Since(started).Round(time.Millisecond).String()
@@ -348,6 +346,9 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 
 	xbcloudArgs := []string{
 		"put",
+		"--md5",
+		"--max-retries=4",
+		"--max-backoff=20000",
 		"--storage=s3",
 		"--s3-bucket=" + cfg.S3Bucket,
 		"--s3-region=" + cfg.S3Region,
@@ -392,10 +393,13 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 
+	_ = streamOut.Close()
+	_ = streamWrite.Close()
 	type loggedResult struct {
-		lastLine string
-		diskLine string
-		err      error
+		completed bool
+		lastLine  string
+		diskLine  string
+		err       error
 	}
 	logPipe := func(prefix string, reader io.Reader) <-chan loggedResult {
 		ch := make(chan loggedResult, 1)
@@ -410,6 +414,9 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 					res.lastLine = line
 				}
 				lower := strings.ToLower(line)
+				if strings.Contains(lower, "completed ok") || strings.Contains(lower, "upload completed") {
+					res.completed = true
+				}
 				if strings.Contains(lower, "no space left") || strings.Contains(lower, "errno 28") {
 					res.diskLine = line
 				}
@@ -426,10 +433,10 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 	xtrabackupLogs := logPipe("xtrabackup", xtrabackupErr)
 	xbcloudLogs := logPipe("xbcloud", xbcloudErr)
 
-	xtrabackupWaitErr := xtrabackupCmd.Wait()
-	xbcloudWaitErr := xbcloudCmd.Wait()
 	xtrabackupScan := <-xtrabackupLogs
 	xbcloudScan := <-xbcloudLogs
+	xbcloudWaitErr := xbcloudCmd.Wait()
+	xtrabackupWaitErr := xtrabackupCmd.Wait()
 
 	result.Duration = time.Since(started).Round(time.Millisecond).String()
 
@@ -475,6 +482,10 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 
+	if !xtrabackupScan.completed || !xbcloudScan.completed {
+		result.Error = "physical pipeline omitted tool completion evidence"
+		return result
+	}
 	// xbcloud stores the backup stream as many small objects under the key as a
 	// virtual directory prefix (e.g. <objectKey>/ibdata1.00000000000000000001).
 	// A HEAD request on the prefix itself always returns 404.  Use ListObjectsV2
@@ -496,8 +507,14 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 	log.Printf("physical backup: remote prefix verified: objects=%d total_bytes=%d", prefixInfo.ObjectCount, prefixInfo.TotalBytes)
+	verified, verifyErr := verifyPhysicalInventory(ctx, cfg, objectKey, prefixInfo)
+	if verifyErr != nil {
+		result.Error = "physical integrity verification: " + verifyErr.Error()
+		return result
+	}
 	completion := physicalCompletionManifest{
-		FormatVersion: 1,
+		Status: "COMPLETE", IntegrityMethod: "every remote chunk compared with xbcloud source MD5; SHA256 recorded", RestoreState: "UNVERIFIED", Artifacts: verified,
+		FormatVersion: 2,
 		CompletedAt:   time.Now().UTC(),
 		RunID:         runID,
 		Bucket:        cfg.S3Bucket,
@@ -528,6 +545,7 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 		return result
 	}
 	result.Status = "success"
+	result.RemoteIntegrityState = "VERIFIED"
 	result.RemoteSizeBytes = prefixInfo.TotalBytes
 	result.CompletionObject = fmt.Sprintf("s3://%s/%s", cfg.S3Bucket, completionKey)
 	log.Printf("physical backup: completed successfully target=%s duration=%s", result.TargetDir, result.Duration)

@@ -289,6 +289,9 @@ func FullRestoreValidation(cfg Config, runID string, progress func(string)) (Log
 	if run == nil {
 		return res, fmt.Errorf("run %q not found", runID)
 	}
+	if strings.HasPrefix(run.ConsistencyMethod, "single mysqldump transaction across all selected InnoDB") {
+		return res, fmt.Errorf("global SQL bundles must not enter the per-database restore workflow; a separately authorized isolated full-bundle workflow is required")
+	}
 	if run.RunFolder == "" {
 		res.Error = "No local run folder recorded for this backup"
 		finalizeValidationResult(cfg, "sandbox restore test", res)

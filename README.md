@@ -10,6 +10,7 @@ terminal UI, REST API, health checks, validation tools, and Prometheus metrics.
 - [Quick start](#quick-start)
 - [How backups are made](#how-backups-are-made)
 - [Configuration](#configuration)
+- [Production configuration](PRODUCTION_CONFIGURATION.md)
 - [Run, validate, and restore](#run-validate-and-restore)
 - [Scheduling and operations](#scheduling-and-operations)
 - [Interfaces and observability](#interfaces-and-observability)
@@ -22,9 +23,10 @@ terminal UI, REST API, health checks, validation tools, and Prometheus metrics.
 - Supports `DB_ENGINE=mysql` and `DB_ENGINE=postgres`.
 - Discovers non-system databases available to the backup user, or limits work
   to `BACKUP_LOGICAL_DATABASES` and `BACKUP_LOGICAL_TABLES`.
-- Produces one compressed SQL artifact per logical database. When encryption is
-  enabled, the artifact is written as `.sql.gz.enc` using authenticated,
-  versioned AES-256-GCM streaming encryption.
+- Supports `per_database` captures and MySQL `global` captures. Global mode
+  writes one `all-databases.sql.gz` artifact using one transaction across the
+  selected InnoDB databases, with a backup lock and object-inventory checks.
+  Encryption uses authenticated, versioned AES-256-GCM (`.sql.gz.enc`).
 - Records an artifact SHA-256 and, when available, the decompressed SQL
   payload SHA-256 in the run manifest.
 - Retries transient dump failures with exponential backoff and writes a
@@ -36,22 +38,29 @@ terminal UI, REST API, health checks, validation tools, and Prometheus metrics.
 
 - Supports MySQL physical backups through Percona XtraBackup and streams the
   result directly to S3 with `xbcloud`; physical backups are not table scoped.
-- Verifies the remote object before writing `PHYSICAL_COMPLETED.json` as the
-  final remote completion marker.
+- Paginates the entire remote inventory and verifies every physical chunk
+  against xbcloud source checksums before publishing `PHYSICAL_COMPLETED.json`.
+  Upload integrity does not establish physical preparation or recoverability.
 - Includes a prepare-only validation command that downloads, extracts, and
   prepares a completed stream without changing a MySQL server.
 
 ### Reliability controls
 
-- Uses a process-aware lock to prevent overlapping runs.
+- Uses a persistent file lock and legacy-PID checks to prevent overlapping runs.
+- Checks estimated storage and a safety reserve before capture and enforces the
+  reserve while streaming; failed captures retain labelled incomplete artifacts.
 - Evaluates logical and physical schedules independently and persists state in
   `backup-schedule-state.json`.
-- Keeps local backups with Grandfather-Father-Son (GFS) retention and protects
-  recent sandbox-restore-verified runs.
+- Holds automatic deletion by default. Retention planning applies GFS to
+  verified complete captures, protects minimum complete and restore-tested
+  coverage, and keeps partial/unknown/dependent points. Explicitly enabled
+  cleanup quarantines candidates with a durable journal; it does not purge them.
 - Writes manifests, schedule state, temporary overrides, and run history
   atomically.
 - Uses direct S3 uploads by default. Direct uploads verify objects and write
-  `COMPLETED.json` last; recovery tooling should accept only completed prefixes.
+  `COMPLETED.json` last only when every required database/object succeeds.
+  Failed/partial runs receive separate markers. Validate manifests and hashes;
+  historical marker presence alone is insufficient proof of completeness.
 - Emits Prometheus textfile metrics and keeps per-run, daily, and JSONL history
   logs.
 
@@ -60,7 +69,10 @@ terminal UI, REST API, health checks, validation tools, and Prometheus metrics.
 ### Prerequisites
 
 - Go 1.24.2 or newer to build from source.
-- For MySQL logical backups: `mysql` and `mysqldump`.
+- For MySQL logical backups: `mysql` and `mysqldump`. With the default
+  `BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE=true`, the dump client must support
+  `--init-command` (the deployed MySQL 8.4.11 client does). The override sets only
+  its session timeout; it never changes the production global timeout.
 - For PostgreSQL logical backups: `pg_dump`; `psql` is also required for
   sandbox restore testing.
 - For MySQL physical backups and physical validation: `xtrabackup`, `xbcloud`,
@@ -145,15 +157,17 @@ The runner uses the following sequence for each invocation:
 4. Run preflight checks for the selected work: credentials, client binaries,
    database connectivity, writable backup/log/metrics paths, and upload
    configuration.
-5. Create logical dumps concurrently up to `BACKUP_LOGICAL_PARALLEL`. The
-   runner applies bounded retries and records successful, skipped, and failed
-   objects in `manifest.json` and `backup-runs.jsonl`.
+5. Check available capacity, inodes and the safety reserve. Capture one shared
+   MySQL transaction in `global` mode, or separate concurrent dumps up to
+   `BACKUP_LOGICAL_PARALLEL` in `per_database` mode. Verify gzip, hashes, dump
+   completion and expected schema objects before accepting capture success.
 6. If enabled and due, stream the MySQL physical backup directly to S3.
 7. Upload logical artifacts when enabled. Direct uploads use multipart transfer
    for large objects, retry transient failures, verify objects with S3, and
    commit `COMPLETED.json` last.
-8. Apply GFS cleanup, retain configured verified recovery points, finalize the
-   run outcome, and publish final metrics.
+8. Hold deletion unless explicitly enabled; otherwise journal retention
+   quarantine after protecting recovery coverage. Freeze committed manifests,
+   store final execution bookkeeping separately, and publish final metrics.
 
 The complete operational explanation and artifact layout are in
 [WORKING.md](WORKING.md). The current implementation changes are tracked in
@@ -172,12 +186,16 @@ control. The groups below cover the settings operators normally change.
 | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS` | Logical database connection. PostgreSQL defaults to port `5432`; MySQL defaults to `3306`. |
 | `BACKUP_DIR`, `BACKUP_LOG_DIR` | Local artifact and log locations. |
 | `BACKUP_ENCRYPTION_KEY` | Optional exact 32-byte raw key or 64-character hexadecimal key for AES-256-GCM encryption. Store it separately from backups. |
+| `BACKUP_STORAGE_RESERVE_BYTES` | Free-space reserve; default 2 GiB. |
+| `BACKUP_STORAGE_ESTIMATE_BYTES` | Minimum compressed capture estimate; doubled for growth and compared with historical complete sizes. `0` uses history with a 1 GiB floor. |
 | `BACKUP_ALLOW_ROOT_RUNNER` | Allows a scheduled runner to run as root. Defaults to `false`. |
 
 ### Logical backups
 
 | Setting | Purpose |
 | --- | --- |
+| `BACKUP_LOGICAL_CONSISTENCY` | `per_database` (compatible default) or MySQL `global`; global mode requires InnoDB, no table scope, and existing `BACKUP_ADMIN` authorization. Maintain a schema-deployment freeze during capture. |
+| `BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE` | Initializes the dump session with `max_execution_time=0`; requires a compatible client. Defaults to `true`. |
 | `BACKUP_LOGICAL_ENABLED` | Enables logical work. |
 | `BACKUP_LOGICAL_SCHEDULE` | `always`, `disabled`, `daily@HH:MM[,HH:MM]`, `weekly@day,HH:MM`, or `interval@24h`. |
 | `BACKUP_LOGICAL_DATABASES` | Comma-separated database allow-list. Empty means all granted non-system databases. |
@@ -217,6 +235,8 @@ s3://<bucket>/<logical-prefix>/<run-id>/COMPLETED.json
 | `BACKUP_PHYSICAL_SCHEDULE` | Independent physical schedule using the same format as logical scheduling. |
 | `BACKUP_PHYSICAL_S3_UPLOAD_ENABLED` | Enables physical S3 streaming. A disabled upload skips physical work. |
 | `BACKUP_XTRABACKUP_*`, `BACKUP_XBCLOUD_*` | XtraBackup client, credentials, socket, working directory, and parallelism controls. |
+| `BACKUP_RETENTION_DELETE_ENABLED` | Defaults to `false`; explicit enablement permits journaled quarantine, never automatic purge. |
+| `BACKUP_RETENTION_MIN_COMPLETE` | Minimum verified complete captures protected; default 2, minimum 1. |
 | `BACKUP_RETENTION_DAILY`, `BACKUP_RETENTION_WEEKLY`, `BACKUP_RETENTION_MONTHLY` | GFS local retention counts. |
 | `BACKUP_RETENTION_MIN_VERIFIED` | Number of newest sandbox-restore-verified local runs protected from cleanup. |
 
@@ -266,8 +286,11 @@ follow [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md).
 ```text
 <BACKUP_DIR>/
   <run-id>/
-    <database>.sql.gz[.enc]
+    <database>.sql.gz[.enc]       # per_database
+    all-databases.sql.gz[.enc]   # global; one shared artifact
     manifest.json
+    manifest-commit.json        # checksum pin after remote publication
+    execution-finalization.json # later bookkeeping, when committed
 
 <BACKUP_LOG_DIR>/
   <run-id>.log
@@ -277,26 +300,50 @@ follow [RECOVERY_OPERATIONS.md](RECOVERY_OPERATIONS.md).
   backup-temporary-overrides.json
 ```
 
-The JSONL history and each run manifest contain the outcome, per-database
-results, hashes, upload state, cleanup status, and persisted validation data.
+Version 2 manifests retain legacy fields and add `RUNNING`, `FAILED`, `PARTIAL`
+and `COMPLETE` recovery states, expected objects and separate restore evidence.
+A committed manifest is immutable; later execution details go into the JSONL
+index and finalization audit. Capture verification never implies a restore test.
+The existing per-database restore command rejects shared global bundles.
+
+Preview retention without changing artifacts:
+
+```bash
+go run ./main.go retention-plan
+```
 
 ## Scheduling and operations
 
-The application decides whether logical and physical work is due; the systemd
-timer only needs to invoke the runner often enough to meet the finest schedule
-you configure. User-scoped systemd is the default installation model.
+The application evaluates logical and physical schedules independently. Set
+`BACKUP_SYSTEMD_SCOPE=system` for system-level production units, `user` for a
+user installation, or `auto` to select installed system units when present.
+`BACKUP_SCHEDULE_TIMEZONE` makes timezone interpretation explicit. The TUI
+shows the effective timer, desired schedule, drift, configuration source,
+next/last triggers and service result; authorization failures are reported
+without switching service managers.
+
+For the current system deployment, inspect without `--user`:
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now sdl-db-backup.timer
-systemctl --user status sdl-db-backup.timer
-journalctl --user -u sdl-db-backup.service -n 100 --no-pager
+systemctl status sdl-db-backup.timer
+journalctl -u sdl-db-backup.service -n 100 --no-pager
+# Preview only:
+go run ./cmd/sdl-db-backup-schedule --env .env
+# Explicit operator-authorized apply, using a built helper:
+go build -o /tmp/sdl-db-backup-schedule ./cmd/sdl-db-backup-schedule
+sudo /tmp/sdl-db-backup-schedule --env /absolute/path/to/.env --apply
 ```
 
-The TUI Systemd page and `GET /api/v1/systemd` can render host-specific unit
-content. The templates [sdl-db-backup.service](sdl-db-backup.service) and
-[sdl-db-backup.timer](sdl-db-backup.timer) require their placeholders to be
-rendered before direct use.
+Saving `.env` does not automatically change the live timer. **Apply saved
+schedule** installs a managed drop-in, validates calendar syntax, reloads,
+restarts an active timer and verifies effective calendars. Failure rolls back
+configuration and the prior drop-in. Persistent timers can trigger a catch-up
+run. For user installations, use `systemctl --user` and `journalctl --user`.
+
+The templates [sdl-db-backup.service](sdl-db-backup.service) and
+[sdl-db-backup.timer](sdl-db-backup.timer) still require placeholder rendering.
+Current production values and verified evidence are documented in
+[PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md).
 
 Use temporary overrides for bounded testing without rewriting `.env`. The TUI
 Schedule page or `PUT /api/v1/schedules/temporary-overrides` stores them in
@@ -317,7 +364,7 @@ or administrative account.
 
 The Bubble Tea TUI manages manual runs, scoped logical backups, permanent and
 temporary schedules, `.env` edits, logs, run history, health, metrics, and
-user-systemd actions. Its full keyboard and page reference is in
+system- or user-scoped systemd actions. Its full keyboard and page reference is in
 [TUI_REFERENCE.md](TUI_REFERENCE.md).
 
 ### REST API

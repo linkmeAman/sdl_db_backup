@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-12T08:27:36.115215+00:00",
+  "object": "pf_TickleRight_9210.co_eff_monthly_view_new",
+  "old_definer": "developer@localhost",
+  "new_definer": "developer@%",
+  "status": "VERIFIED",
+  "rollback_applied": false,
+  "field_count": 15,
+  "definition_unchanged_except_definer": true,
+  "required_view_checks": 382,
+  "failed_views": []
+}

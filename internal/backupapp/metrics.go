@@ -43,6 +43,10 @@ func metricsLabelString(cfg config) string {
 }
 
 type backupMetricsSnapshot struct {
+	CapacityAvailable           uint64
+	CapacityRequired            uint64
+	CapacitySufficient          int
+	RetentionDeletionEnabled    int
 	RunTimestamp                int64
 	SuccessTimestamp            int64
 	DurationSeconds             float64
@@ -135,7 +139,7 @@ func buildFinalBackupMetricsSnapshot(cfg config, record runRecord, startedAt tim
 		logicalTotalDatabases = record.DatabasesTotal
 		logicalSucceededDatabases = record.DatabasesSucceeded
 		logicalFailedDatabases = record.DatabasesFailed
-		if record.DatabasesFailed == 0 {
+		if record.DatabasesTotal > 0 && record.DatabasesFailed == 0 && record.DatabasesSucceeded == record.DatabasesTotal && record.LogicalBackupScope == "" && len(record.LogicalOmissions) == 0 && (record.FormatVersion < 2 || record.LocalCaptureIntegrityState == "VERIFIED") {
 			logicalStatus = 1
 		}
 	}
@@ -209,13 +213,20 @@ func buildInProgressBackupMetricsSnapshot(cfg config, startedAt time.Time) backu
 	previous.CurrentRunStartTimestamp = startedAt.UTC().Unix()
 	previous.CurrentRunDurationSeconds = time.Since(startedAt).Seconds()
 	previous.MetricsLastUpdateTimestamp = now.Unix()
+	applyCurrentCapacity(cfg, &previous)
 	return previous
 }
 
 func totalLogicalArtifactSize(results []databaseResult) int64 {
 	var total int64
+	seen := map[string]bool{}
 	for _, result := range results {
-		if result.SizeBytes > 0 {
+		key := result.OutputPath
+		if key == "" {
+			key = result.Name
+		}
+		if result.SizeBytes > 0 && !seen[key] {
+			seen[key] = true
 			total += result.SizeBytes
 		}
 	}
@@ -300,6 +311,14 @@ func readExistingBackupMetricsSnapshot(path string) backupMetricsSnapshot {
 		switch name {
 		case "backup_last_run_timestamp":
 			snapshot.RunTimestamp, _ = strconv.ParseInt(value, 10, 64)
+		case "backup_storage_available_bytes":
+			snapshot.CapacityAvailable, _ = strconv.ParseUint(value, 10, 64)
+		case "backup_storage_required_bytes":
+			snapshot.CapacityRequired, _ = strconv.ParseUint(value, 10, 64)
+		case "backup_storage_capacity_sufficient":
+			snapshot.CapacitySufficient, _ = strconv.Atoi(value)
+		case "backup_retention_deletion_enabled":
+			snapshot.RetentionDeletionEnabled, _ = strconv.Atoi(value)
 		case "backup_last_success_timestamp":
 			snapshot.SuccessTimestamp, _ = strconv.ParseInt(value, 10, 64)
 		case "backup_last_duration_seconds":
@@ -399,6 +418,10 @@ func writeBackupMetricsFile(path string, snapshot backupMetricsSnapshot, labels 
 		Help  string
 		Value string
 	}{
+		{Name: "backup_storage_available_bytes", Help: "Available capture volume capacity.", Value: strconv.FormatUint(snapshot.CapacityAvailable, 10)},
+		{Name: "backup_storage_required_bytes", Help: "Estimated capture plus protected reserve.", Value: strconv.FormatUint(snapshot.CapacityRequired, 10)},
+		{Name: "backup_storage_capacity_sufficient", Help: "One only when the capture fits the safety reserve.", Value: strconv.Itoa(snapshot.CapacitySufficient)},
+		{Name: "backup_retention_deletion_enabled", Help: "Operator-authorized retention quarantine is enabled.", Value: strconv.Itoa(snapshot.RetentionDeletionEnabled)},
 		{
 			Name:  "backup_last_run_timestamp",
 			Help:  "Unix timestamp when the most recent backup run ended.",
@@ -685,6 +708,16 @@ func validateMetricsPathWritable(path string) error {
 
 func emitFinalBackupMetrics(cfg config, record runRecord, startedAt time.Time, logicalDue bool, physicalDue bool, uploadRequired bool, uploadSucceeded bool) {
 	snapshot := buildFinalBackupMetricsSnapshot(cfg, record, startedAt, logicalDue, physicalDue, uploadRequired, uploadSucceeded)
+	if record.Capacity != nil {
+		snapshot.CapacityAvailable = record.Capacity.AvailableBytes
+		snapshot.CapacityRequired = record.Capacity.RequiredBytes
+		if record.Capacity.Sufficient {
+			snapshot.CapacitySufficient = 1
+		}
+	}
+	if cfg.RetentionDeleteEnabled {
+		snapshot.RetentionDeletionEnabled = 1
+	}
 	if err := writeBackupMetricsFile(cfg.MetricsFile, snapshot, metricsLabelString(cfg)); err != nil {
 		log.Printf("metrics write failed path=%s err=%v", cfg.MetricsFile, err)
 		return
@@ -752,5 +785,19 @@ func startRealtimeBackupMetricsEmitter(cfg config, startedAt time.Time) func() {
 	return func() {
 		close(stopCh)
 		<-doneCh
+	}
+}
+
+func applyCurrentCapacity(cfg config, snapshot *backupMetricsSnapshot) {
+	capacity, err := preflightCapacity(cfg, cfg.LogicalEnabled)
+	snapshot.CapacityAvailable = capacity.AvailableBytes
+	snapshot.CapacityRequired = capacity.RequiredBytes
+	snapshot.CapacitySufficient = 0
+	if err == nil && capacity.Sufficient {
+		snapshot.CapacitySufficient = 1
+	}
+	snapshot.RetentionDeletionEnabled = 0
+	if cfg.RetentionDeleteEnabled {
+		snapshot.RetentionDeletionEnabled = 1
 	}
 }

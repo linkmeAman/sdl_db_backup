@@ -1,0 +1,8 @@
+{
+  "observed_at": "2026-10-12T12:06:25.452777911Z",
+  "run_id": "2026-10-12_17-26-25",
+  "action": "KEEP",
+  "reason": "verified complete recovery point",
+  "complete_points": 1,
+  "delete_enabled": false
+}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -194,8 +195,11 @@ func removePartialOutput(path string) {
 	if path == "" {
 		return
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Printf("warning: could not remove partial backup %s: %v", path, err)
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		target := path + ".incomplete-" + time.Now().UTC().Format("20060102T150405.000000000")
+		if err := os.Rename(path, target); err != nil {
+			log.Printf("failed to preserve incomplete artifact %s: %v", path, err)
+		}
 	}
 }
 
@@ -668,7 +672,7 @@ func readNamesQuery(cmd *exec.Cmd, label string) ([]string, error) {
 	return names, nil
 }
 
-func getDatabaseSchemaFingerprint(cfg config, dbName string) (string, error) {
+func getDatabaseObjectInventory(cfg config, dbName string) (map[string][]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.PreflightTimeout)
 	defer cancel()
 
@@ -684,12 +688,12 @@ func getDatabaseSchemaFingerprint(cfg config, dbName string) (string, error) {
 			cmd := dbCmdContext(ctx, cfg, "psql", "-d", dbName, "-A", "-t", "-c", query)
 			names, err := readNamesQuery(cmd, key+" fingerprint")
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			sections[key] = names
 		}
 		sections["event"] = nil
-		return buildSchemaFingerprint(sections), nil
+		return sections, nil
 	}
 
 	queryMap := map[string]string{
@@ -703,11 +707,19 @@ func getDatabaseSchemaFingerprint(cfg config, dbName string) (string, error) {
 		cmd := dbCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-e", query)
 		names, err := readNamesQuery(cmd, key+" fingerprint")
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		sections[key] = names
 	}
-	return buildSchemaFingerprint(sections), nil
+	return sections, nil
+}
+
+func getDatabaseSchemaFingerprint(cfg config, name string) (string, error) {
+	inventory, e := getDatabaseObjectInventory(cfg, name)
+	if e != nil {
+		return "", e
+	}
+	return buildSchemaFingerprint(inventory), nil
 }
 
 func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
@@ -745,9 +757,10 @@ func discoverBrokenViews(cfg config, dbName string) ([]string, error) {
 			if category == "" {
 				category = "view"
 			}
-			if strings.Contains(msg, "View") && strings.Contains(msg, "references invalid table(s)") {
-				broken = append(broken, viewName)
+			if mysqlErrorCode(msg) != 1356 {
+				return nil, fmt.Errorf("required view validation failed for %s: %s", viewName, chooseFailureMessage(checkErr, msg))
 			}
+			broken = append(broken, viewName)
 			log.Printf("warning: skipping view database=%s view=%s category=%s error=%s", dbName, viewName, category, chooseFailureMessage(checkErr, msg))
 		}
 	}
@@ -856,7 +869,7 @@ type dumpDatabaseOutcome struct {
 }
 
 func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTables []string) (dumpDatabaseOutcome, error) {
-	log.Printf("starting dump for database=%s", dbName)
+	log.Printf("starting logical capture for database group=%s consistency=%s", dbName, cfg.LogicalConsistency)
 	logLogicalTableSummary(dbName, tables)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.LogicalTimeoutPerDB)
@@ -873,10 +886,10 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		}
 	}
 
-	var baseWriter io.Writer = file
+	var baseWriter io.Writer = &reserveWriter{file: file, reserve: uint64(max(0, cfg.StorageReserveBytes))}
 	var encryptionCloser io.Closer
 	if cfg.EncryptionKey != "" {
-		encWriter, encErr := EncryptWriter(file, cfg.EncryptionKey)
+		encWriter, encErr := EncryptWriter(baseWriter, cfg.EncryptionKey)
 		if encErr != nil {
 			closeFile()
 			removePartialOutput(outFile)
@@ -900,6 +913,20 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		cmd = dbCmdContext(ctx, cfg, "pg_dump", args...)
 	} else {
 		args := buildMySQLDumpArgsWithPITR(dbName, tables, ignoreTables, cfg.MySQLPITRMetadataEnabled)
+		if cfg.LogicalConsistency == "global" {
+			args = buildGlobalMySQLDumpArgs(cfg.LogicalDatabases, cfg.MySQLPITRMetadataEnabled)
+		}
+		if cfg.MySQLDumpSessionTimeoutOverride {
+			helpCtx, helpCancel := context.WithTimeout(ctx, cfg.PreflightTimeout)
+			help, helpErr := exec.CommandContext(helpCtx, cfg.MySQLDumpBin, "--no-defaults", "--help").Output()
+			helpCancel()
+			if helpErr != nil || !strings.Contains(string(help), "--init-command") {
+				closeFile()
+				removePartialOutput(outFile)
+				return dumpDatabaseOutcome{}, fmt.Errorf("mysqldump lacks --init-command; use a compatible client supporting session-only max_execution_time override; GLOBAL settings are unchanged")
+			}
+			args = append([]string{"--init-command=SET SESSION max_execution_time=0"}, args...)
+		}
 		cmd = dbCmdContext(ctx, cfg, cfg.MySQLDumpBin, args...)
 	}
 	stdout, err := cmd.StdoutPipe()
@@ -1006,13 +1033,17 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 	result := databaseResult{Name: dbName, Status: "failed", SelectedTables: append([]string(nil), tables...)}
 	brokenViews, precheckErr := discoverBrokenViews(cfg, dbName)
 	if precheckErr != nil {
-		log.Printf("warning: could not precheck views for database=%s: %v", dbName, precheckErr)
+		result.Error = "view inventory precheck failed: " + precheckErr.Error()
+		result.ErrorCategory = classifyFailure(precheckErr, precheckErr.Error())
+		result.ErrorCode = mysqlErrorCode(precheckErr.Error())
+		return result
 	}
 	if len(brokenViews) > 0 {
 		log.Printf("database=%s: precheck found %d broken view(s), excluding from dump: %s", dbName, len(brokenViews), strings.Join(brokenViews, ", "))
 		if !cfg.AllowObjectOmissions {
 			result.Error = "backup refused because objects would be omitted; set BACKUP_ALLOW_OBJECT_OMISSIONS=true only for an explicitly partial backup: " + strings.Join(brokenViews, ", ")
 			result.ErrorCategory = "schema"
+			result.ErrorCode = 1356
 			result.Duration = time.Since(started).Round(time.Millisecond).String()
 			return result
 		}
@@ -1052,6 +1083,13 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 			} else {
 				log.Printf("warning: could not fetch schema fingerprint for database=%s: %v", dbName, err)
 			}
+			inventory, inventoryErr := getDatabaseObjectInventory(cfg, dbName)
+			if inventoryErr != nil {
+				result.Error = "required schema inventory: " + inventoryErr.Error()
+				result.ErrorCategory = "schema"
+				return result
+			}
+			result.ExpectedObjects = inventory
 			if cfg.ExactRowCounts {
 				if tableCounts, total, err := getDatabaseExactTableRowCounts(cfg, dbName); err == nil {
 					result.TableRowCounts = tableCounts
@@ -1122,6 +1160,7 @@ func dumpWithRetry(cfg config, dbName, outFile string, tables []string) database
 
 		result.Error = err.Error()
 		result.ErrorCategory = classifyFailure(err, err.Error())
+		result.ErrorCode = mysqlErrorCode(err.Error())
 		log.Printf("attempt %d/%d failed for database=%s category=%s err=%v", attempt, cfg.RetryCount, dbName, result.ErrorCategory, err)
 
 		if attempt == cfg.RetryCount || !shouldRetry(result.ErrorCategory) {
@@ -1168,6 +1207,9 @@ func classifyFailure(err error, detail string) string {
 		return "timeout"
 	}
 	text := strings.ToLower(strings.TrimSpace(detail + " " + err.Error()))
+	if strings.Contains(text, "3024") || strings.Contains(text, "maximum statement execution time") {
+		return "config"
+	}
 	switch {
 	case strings.Contains(text, "access denied"):
 		return "auth"
@@ -1192,6 +1234,8 @@ func classifyFailure(err error, detail string) string {
 		return "definer"
 	case strings.Contains(text, "doesn't exist"), strings.Contains(text, "1146"):
 		return "schema"
+	case strings.Contains(text, "3024"), strings.Contains(text, "maximum statement execution time"), strings.Contains(text, "lacks --init-command"):
+		return "config"
 	case strings.Contains(text, "max_allowed_packet"), strings.Contains(text, "got a packet bigger"), strings.Contains(text, "1153"):
 		return "config"
 	default:
@@ -1309,6 +1353,12 @@ func updateRunRecord(path, runID string, apply func(*runRecord)) (runRecord, err
 }
 
 func writeManifest(runFolder string, record runRecord) error {
+	if _, err := os.Stat(filepath.Join(runFolder, "manifest-commit.json")); err == nil {
+		return fmt.Errorf("committed manifest is immutable; write independent verification or execution audit")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
 	manifestPath := filepath.Join(runFolder, "manifest.json")
 	encoded, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -1318,6 +1368,7 @@ func writeManifest(runFolder string, record runRecord) error {
 }
 
 func finalizeRun(cfg config, record *runRecord, startedAt time.Time) int {
+	setManifestMetadata(cfg, record)
 	if record.Duration == "" {
 		record.Duration = time.Since(startedAt).Round(time.Millisecond).String()
 	}
@@ -1328,8 +1379,11 @@ func finalizeRun(cfg config, record *runRecord, startedAt time.Time) int {
 	}
 
 	if record.RunFolder != "" {
-		if err := writeManifest(record.RunFolder, *record); err != nil {
-			log.Printf("warning: failed to write manifest for run=%s: %v", record.RunID, err)
+		if err := persistFinalRunMetadata(record.RunFolder, *record); err != nil {
+			record.Status = "failed"
+			record.RecoveryState = "FAILED"
+			record.FailureReason = "persist final manifest: " + err.Error()
+			log.Printf("failed to write manifest for run=%s: %v", record.RunID, err)
 		}
 	}
 	if err := appendRunRecord(cfg.RunLogPath, *record); err != nil {
@@ -1357,44 +1411,20 @@ func finalizeRun(cfg config, record *runRecord, startedAt time.Time) int {
 	return 1
 }
 
-// tryDisableMaxExecutionTime attempts to set @@GLOBAL.max_execution_time=0 so
-// mysqldump SELECT queries are not killed mid-table. Returns a restore function.
-// If the user lacks SYSTEM_VARIABLES_ADMIN, logs a warning and returns a no-op.
-func tryDisableMaxExecutionTime(cfg config) func() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func buildGlobalMySQLDumpArgs(databases []string, pitr bool) []string {
+	args := buildMySQLDumpArgsWithPITR("", nil, nil, pitr)
+	args = args[:len(args)-1]
+	args = append(args, "--databases")
+	return append(args, databases...)
+}
 
-	cmd := mysqlCmdContext(ctx, cfg, cfg.MySQLBin, "-N", "-s", "-e", "SELECT @@GLOBAL.max_execution_time")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("max_execution_time: could not read current value: %v", strings.TrimSpace(string(out)))
-		return func() {}
-	}
-	currentVal := strings.TrimSpace(string(out))
-	if currentVal == "0" || currentVal == "" {
-		log.Printf("max_execution_time: already 0, dumps will not be interrupted")
-		return func() {}
-	}
+var mysqlErrorCodeRE = regexp.MustCompile(`(?i)(?:error|errno)[ :]+([0-9]+)`)
 
-	log.Printf("max_execution_time: server value is %s ms — attempting to disable for this backup run", currentVal)
-
-	setCtx, setCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer setCancel()
-	if setErr := mysqlCmdContext(setCtx, cfg, cfg.MySQLBin, "-N", "-e", "SET GLOBAL max_execution_time=0").Run(); setErr != nil {
-		log.Printf("warning: cannot disable max_execution_time (user lacks SYSTEM_VARIABLES_ADMIN?): %v", setErr)
-		log.Printf("warning: large-table dumps may still hit the %s ms server timeout", currentVal)
-		return func() {}
+func mysqlErrorCode(message string) int {
+	m := mysqlErrorCodeRE.FindStringSubmatch(message)
+	if m == nil {
+		return 0
 	}
-	log.Printf("max_execution_time: disabled (0) for backup run; will restore to %s ms afterward", currentVal)
-
-	return func() {
-		rCtx, rCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer rCancel()
-		restoreSQL := fmt.Sprintf("SET GLOBAL max_execution_time=%s", currentVal)
-		if rErr := mysqlCmdContext(rCtx, cfg, cfg.MySQLBin, "-N", "-e", restoreSQL).Run(); rErr != nil {
-			log.Printf("warning: could not restore max_execution_time to %s ms: %v", currentVal, rErr)
-		} else {
-			log.Printf("max_execution_time: restored to %s ms", currentVal)
-		}
-	}
+	code, _ := strconv.Atoi(m[1])
+	return code
 }

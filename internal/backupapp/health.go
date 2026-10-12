@@ -346,6 +346,8 @@ func GetHealthReport(ctx context.Context, envPath string) (HealthReport, error) 
 		return report, err
 	}
 	report.LatestRun = latestRun
+	report.Capacity, _ = preflightCapacity(cfg, cfg.LogicalEnabled)
+	report.Recovery = recoveryHealth(cfg)
 	return report, nil
 }
 

@@ -1075,11 +1075,11 @@ func (m model) viewSystemd(width int) string {
 	lines = append(lines, sectionTitle.Render("Invocation Context"))
 	if m.healthLoaded {
 		rt := m.health.Runtime
-		userTag := good.Render("user-level")
-		sysctlMode := "systemctl --user ..."
+		userTag := good.Render("service scope " + m.systemd.Scope)
+		sysctlMode := "systemctl (" + m.systemd.Scope + " scope)"
 		if !rt.NonRoot {
 			userTag = bad.Render("ROOT ⚠")
-			sysctlMode = "systemctl (system-level) — scheduled runs as root are NOT supported"
+			sysctlMode = "systemctl (" + m.systemd.Scope + " scope); non-root service account required"
 		}
 		lines = append(lines,
 			fmt.Sprintf("Running as:      %s (%s)", rt.CurrentUser, userTag),
@@ -1089,7 +1089,7 @@ func (m model) viewSystemd(width int) string {
 		if !rt.NonRoot {
 			lines = append(lines,
 				"",
-				bad.Render("⚠  Scheduled backups must run as a non-root user via a user-level systemd"),
+				bad.Render("⚠  Scheduled backups must run as a non-root service account in the authoritative systemd"),
 				bad.Render("   timer. Running as root causes ownership drift in backup/log/metrics dirs."),
 			)
 		}
@@ -1103,9 +1103,9 @@ func (m model) viewSystemd(width int) string {
 	// ── Unit Status ───────────────────────────────────────────────────────
 	if m.systemdErr != "" {
 		lines = append(lines,
-			bad.Render("Could not read user systemd status"),
+			bad.Render("Could not read authoritative systemd status"),
 			"Details: "+m.systemdErr,
-			muted.Render("Check that user systemd is available for this account, then press r to retry."),
+			muted.Render("Check unit scope and authorization, then press r to retry."),
 			"",
 		)
 	}
@@ -1115,11 +1115,25 @@ func (m model) viewSystemd(width int) string {
 	lines = append(lines,
 		fmt.Sprintf("Service: load=%s active=%s sub=%s enabled=%s", m.systemd.Service.LoadState, m.systemd.Service.Active, m.systemd.Service.SubState, m.systemd.Service.Enabled),
 		fmt.Sprintf("Timer:   load=%s active=%s sub=%s enabled=%s", m.systemd.Timer.LoadState, m.systemd.Timer.Active, m.systemd.Timer.SubState, m.systemd.Timer.Enabled),
+		"Manager: "+m.systemd.Scope,
+		"Desired schedule: "+m.systemd.DesiredSchedule,
+		fmt.Sprintf("Storage: available=%d required=%d sufficient=%t", m.health.Capacity.AvailableBytes, m.health.Capacity.RequiredBytes, m.health.Capacity.Sufficient),
+		"Latest complete capture: "+m.health.Recovery.LatestCompleteID,
+		"Latest local complete capture: "+m.health.Recovery.LatestLocalCompleteID,
+		"Latest partial: "+m.health.Recovery.LatestPartialID,
+		"Latest verified remote capture: "+m.health.Recovery.LatestRemoteVerifiedID,
+		fmt.Sprintf("Complete capture age: %ds; recovery availability %s", m.health.Recovery.CompleteAgeSeconds, m.health.Recovery.AvailabilityState),
+		"Installed calendar: "+m.systemd.Timer.Calendar,
+		fmt.Sprintf("Configuration drift: %t", m.systemd.ScheduleDrift),
+		"Next trigger: "+m.systemd.Timer.NextTrigger,
+		"Last trigger: "+m.systemd.Timer.LastTrigger,
+		"Last service result: "+m.systemd.Service.Result,
+		"Service configuration: "+m.systemd.Service.ConfigSource,
 		"Expected service unit: "+m.cfg.ServiceUnitName,
 		"Expected timer unit:   "+m.cfg.TimerUnitName,
 		"",
 		sectionTitle.Render("Portable Guidance"),
-		"Use a user-level systemd timer/service for scheduled runs.",
+		"Use the authoritative systemd scope with a non-root service account.",
 		"Do not schedule both the Go runner and the shell script.",
 		"Grafana guide: GRAFANA_BACKUP_MONITORING.md",
 		"",

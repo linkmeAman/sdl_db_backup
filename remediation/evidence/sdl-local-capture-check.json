@@ -1,0 +1,67 @@
+{
+  "run_id": "2026-10-08_18-00-01",
+  "capture_status": "success",
+  "databases": [
+    {
+      "database": "bk_pf_TickleRight_9210",
+      "sql_sha256_match": true,
+      "dump_completed_footer": true,
+      "base_table_count": 3,
+      "view_count": 0,
+      "expected_base_table_count": 3,
+      "expected_view_count": 0,
+      "object_counts_match": true
+    },
+    {
+      "database": "bk_pf_messenger",
+      "sql_sha256_match": true,
+      "dump_completed_footer": true,
+      "base_table_count": 36,
+      "view_count": 0,
+      "expected_base_table_count": 36,
+      "expected_view_count": 0,
+      "object_counts_match": true
+    },
+    {
+      "database": "pf_TickleRight_9210",
+      "sql_sha256_match": true,
+      "dump_completed_footer": true,
+      "base_table_count": 655,
+      "view_count": 375,
+      "expected_base_table_count": 655,
+      "expected_view_count": 375,
+      "object_counts_match": true
+    },
+    {
+      "database": "pf_central",
+      "sql_sha256_match": true,
+      "dump_completed_footer": true,
+      "base_table_count": 140,
+      "view_count": 7,
+      "expected_base_table_count": 140,
+      "expected_view_count": 7,
+      "object_counts_match": true
+    },
+    {
+      "database": "pf_messenger",
+      "sql_sha256_match": true,
+      "dump_completed_footer": true,
+      "base_table_count": 42,
+      "view_count": 0,
+      "expected_base_table_count": 42,
+      "expected_view_count": 0,
+      "object_counts_match": true
+    },
+    {
+      "database": "pf_messenger_dev",
+      "sql_sha256_match": true,
+      "dump_completed_footer": true,
+      "base_table_count": 42,
+      "view_count": 0,
+      "expected_base_table_count": 42,
+      "expected_view_count": 0,
+      "object_counts_match": true
+    }
+  ],
+  "cross_database_consistency": "NOT_GUARANTEED_BY_SEPARATE_DUMPS"
+}

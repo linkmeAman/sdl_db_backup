@@ -1,0 +1,11 @@
+{
+  "state": "VERIFIED",
+  "run_id": "2026-10-12_18-00-03",
+  "remote_modified": false,
+  "backup_payload_modified": false,
+  "semantic_fields_unchanged": true,
+  "changed_bookkeeping_fields": [
+    "ended_at",
+    "duration"
+  ]
+}
