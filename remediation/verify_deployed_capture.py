@@ -4,6 +4,7 @@ import datetime
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import boto3
@@ -13,15 +14,18 @@ from dotenv import dotenv_values
 parser = argparse.ArgumentParser()
 parser.add_argument('--run-id', required=True)
 parser.add_argument('--output', default='remediation/deployed-backup-proof.json')
+parser.add_argument('--env', default=os.environ.get('BACKUP_ENV_FILE', '.env'))
 args = parser.parse_args()
 if '/' in args.run_id or '..' in args.run_id:
     raise ValueError('invalid run id')
-values = dotenv_values('.env')
+values = dict(dotenv_values(args.env))
+values.update({key: value for key, value in os.environ.items() if value.strip()})
 required = values['BACKUP_LOGICAL_DATABASES'].split(',')
 bucket = values['BACKUP_S3_BUCKET']
 prefix = values['BACKUP_S3_LOGICAL_PREFIX'].strip('/') + '/' + args.run_id + '/'
 folder = Path(values['BACKUP_DIR']) / args.run_id
 client = boto3.client('s3', region_name=values['BACKUP_S3_REGION'],
+                      endpoint_url=values.get('BACKUP_S3_ENDPOINT') or None,
                       aws_access_key_id=values['BACKUP_S3_KEY_ID'],
                       aws_secret_access_key=values['BACKUP_S3_KEY_SECRET'],
                       config=Config(connect_timeout=10, read_timeout=30,
@@ -43,7 +47,7 @@ out = {'observed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
        'run_id': args.run_id, 'destination': 's3://' + bucket + '/' + prefix,
        'marker_status': marker.get('status'), 'manifest_state': manifest.get('recovery_state'),
        'expected_databases_match': sorted(marker.get('expected_databases', [])) == sorted(required),
-       'six_complete_results': len(manifest.get('results', [])) == 6
+       'all_configured_databases_complete': len(manifest.get('results', [])) == len(required)
        and sorted(result['name'] for result in manifest['results']) == sorted(required)
        and all(result['status'] == 'success' for result in manifest['results']),
        'duration': manifest.get('duration'), 'capture_duration': manifest['results'][0].get('duration'),
@@ -88,7 +92,7 @@ out['sql_sha256_match_all_results'] = all(result.get('sql_sha256') == raw.hexdig
 out['expected_object_counts'] = {
     result['name']: {kind: len(names) for kind, names in result.get('expected_objects', {}).items()}
     for result in manifest['results']}
-passed = all(out[key] for key in ['expected_databases_match', 'six_complete_results',
+passed = all(out[key] for key in ['expected_databases_match', 'all_configured_databases_complete',
                                   'marker_artifact_inventory_match', 'remote_inventory_match',
                                   'dump_footer_present', 'sql_sha256_match_all_results'])
 passed = passed and out['marker_status'] == 'COMPLETE' and out['manifest_state'] == 'COMPLETE'

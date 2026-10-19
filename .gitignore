@@ -26,6 +26,7 @@ remediation/tools/
 remediation/releases/
 remediation/rollback/
 remediation/__pycache__/
+loki/__pycache__/
 
 # Local systemd audit and lock files; configuration credentials stay private.
 .env.schedule-audit
@@ -41,3 +42,7 @@ remediation/view-definer-*.sql
 # Frozen automatic-storage release and private rollback configuration.
 remediation/storage-release/
 remediation/storage-rollback/
+
+# Consolidated log compatibility links and private migration rollback state.
+remediation/oneoff-logs
+remediation/log-path-migration

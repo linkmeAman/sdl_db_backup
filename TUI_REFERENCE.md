@@ -229,7 +229,7 @@ Dashboard
 | ok - physical backup prerequisites look valid                               |
 +----------------------------------------------------------------------------+
 + Logs -----------------------------------------------------------------------+
-| daily: /mnt/volume_1/backup/mysql_backup/logs/YYYY-MM-DD.log                |
+| daily: /mnt/volume_1/backup/logs/sdl-db-backup/YYYY-MM-DD.log                |
 +----------------------------------------------------------------------------+
 
 Quick Actions (shown first so it remains usable in short terminals)
@@ -555,8 +555,8 @@ Health Diagnostics
 r refresh
 
 Config: .env
-Daily Log: /mnt/volume_1/backup/mysql_backup/logs/YYYY-MM-DD.log
-Run Index: /mnt/volume_1/backup/mysql_backup/logs/backup-runs.jsonl
+Daily Log: /mnt/volume_1/backup/logs/sdl-db-backup/YYYY-MM-DD.log
+Run Index: /mnt/volume_1/backup/logs/sdl-db-backup/backup-runs.jsonl
 
 Logical:  ok - logical backup prerequisites look valid
 Physical: ok - physical backup prerequisites look valid

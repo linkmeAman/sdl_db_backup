@@ -18,12 +18,13 @@ scrape_configs:
           service: mysql
           env: pilot
           log_kind: run
-          __path__: /mnt/volume_1/backup/mysql_backup/logs/*_*.log
+          __path__: ${BACKUP_LOG_GLOB}
     pipeline_stages:
       - regex:
           expression: "^(?P<ts>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}) (?P<msg>.*)$"
       - timestamp:
           source: ts
           format: "2006/01/02 15:04:05.000000"
+          location: ${BACKUP_LOG_TIMEZONE}
       - output:
           source: msg

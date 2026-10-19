@@ -1,10 +1,30 @@
 # Production backup configuration
 
-This records the deployed configuration and evidence on October 12, 2026.
+This records the deployed profile first verified on October 12, 2026, with
+the local-retention and live-verification update on October 19, 2026.
 It is a host-specific operating profile, not the generic `.env.example`
 defaults. Credentials and backup contents are never versioned.
 
 ## Verified operating state
+
+Latest verification, October 19: run `2026-10-19_13-58-22` completed all six
+logical databases and the physical backup successfully. Independent full local
+and S3 reads verified sizes, SHA-256, gzip integrity, SQL hashes, exact artifact
+inventory and completion markers. The physical run verified all 4,013 remote
+chunks (20,975,993,263 bytes) against xbcloud source MD5 and recorded SHA-256.
+Exactly four local logical payload runs remain. Fifteen obsolete local sets,
+including legacy and diagnostic locations, were removed: 11,843,740,387 bytes.
+Manifests and deletion journals remain, and offsite history is retained.
+
+The timer remains active; its next trigger at final verification is October 19
+at 16:00 IST. Manual systemd start required a sudo password, so the validation
+ran directly as the configured `developer` service account. The previous
+systemd failure status requires a privileged reset or the next successful
+scheduled run to clear. Restore testing and physical preparation were not run.
+
+- [October 19 retention and backup verification](remediation/local-retention-verification.json)
+
+The following October 12 evidence records the initial deployment baseline.
 
 The production validation run `2026-10-12_20-21-17`, using the enabled local
 storage manager, captured **six of six** databases with no failures in
@@ -109,13 +129,87 @@ do not prove unchanged SQL definitions under arbitrary metadata changes.
 The approved view repair changed only the missing definer to an existing
 account, with unchanged business definition and security mode.
 
+## Consolidated backup logs
+
+As of October 19, 2026, the canonical log and operational-state directory is
+`/mnt/volume_1/backup/logs/sdl-db-backup`. Daily/run logs, run history,
+schedule state, the shared backup lock and deletion audits are together there.
+Earlier one-off and smoke-test logs are under its private `diagnostics/` tree.
+These are deployment settings in `.env`, not paths embedded in the runner.
+`BACKUP_DIR`, `BACKUP_LOG_DIR`, `BACKUP_LOCK_FILE`, and
+`BACKUP_XTRABACKUP_WORK_DIR` control their respective locations. When omitted,
+the log and physical work directories default to `BACKUP_DIR/logs` and
+`BACKUP_DIR/xtrabackup-work`; the shared lock defaults to `BACKUP_LOG_DIR/backup.lock`.
+The migration tool accepts `--env`, `--log-dir`, and `--journal-dir`; without
+`--log-dir` it only reports the configured location. The deployment helper also
+reads the configured lock. Render the collector example using
+`python3 loki/render_config.py --env .env --output /tmp/sdl-promtail.yml`.
+The old runtime and diagnostic paths are compatibility symlinks to this single
+physical tree; historical manifest/log references stay valid. Live Promtail
+continues through its old path alias, preserving file identities and saved tail
+offsets. No collector restart or duplicate log copy was introduced.
+
+The migration verified every moved file checksum and permission, shared-lock
+exclusion, readable history/state, current health and collector readiness.
+See [log consolidation verification](remediation/log-path-verification.json).
+
+### Configuration and capture verification, October 19
+
+Active runner defaults and operational helpers use configured directories; no
+host-specific `/mnt/volume_1` path remains embedded in their source. The three
+rebuilt runner, health, and TUI binaries were installed and checksum-verified.
+Run `2026-10-19_15-21-15` finished successfully at 15:42 IST with all six logical
+databases, 1,088,541,600 compressed bytes, and a committed S3 completion marker.
+Independent full S3 downloads matched local SHA-256 and sizes; gzip integrity,
+the dump completion footer, and all recorded SQL hashes passed. Four local
+payload runs remain; the 02:00 payload was safely evicted. Restore testing was
+not performed. The persisted logical and physical schedules remain unchanged.
+
+Promtail reads the centralized files through its existing compatibility alias.
+The operator applied the backup timestamp timezone correction at 15:50 IST;
+both configurations now use the host timezone, and Promtail is active and ready.
+A uniquely labeled diagnostic entry appended to the configured run log was
+independently retrieved from Loki at 15:51 IST, confirming delivery with a current
+timestamp. The backup payloads were unchanged. Earlier entries rejected before
+the correction were not replayed.
+
+`remediation/apply_promtail_log_timezone.py` uses the host timezone, accepts
+`--timezone`, preserves existing scrape paths and positions, and changes only
+the backup timestamp stage. Repeating the following command is a no-op when
+the settings already match:
+
+```bash
+sudo python3 remediation/apply_promtail_log_timezone.py \
+  --config /etc/promtail/config.yaml \
+  --config /etc/promtail/promtail-config.yml --apply
+```
+
+The Git fields in the verification report record the checkout before publication.
+See [configuration and sync verification](remediation/configuration-sync-verification.json).
+
 ## Storage and retention
+
+Updated October 19, 2026: `BACKUP_LOCAL_MAX_BACKUPS=4` limits local logical
+payloads to four timestamped runs, independently of disk pressure. The runner
+reserves one slot before capture, retaining three independently verified local
+points before writing the fourth. Obsolete payloads are unlinked after full
+verification of their exact offsite counterpart; manifests and audit records
+remain. S3 history is retained. Pins, restore evidence, unknown artifacts and
+physical/binlog dependencies still prevent unsafe deletion; an unmet limit
+blocks another capture rather than growing local payload storage.
+
+A combined run whose only failure is its physical task may have its logical
+payload independently verified for retention. Its committed PARTIAL manifest
+and marker remain unchanged, and it cannot count as a complete offsite recovery
+point. At least two independently verified COMPLETE offsite points are required.
+
 
 ```dotenv
 BACKUP_DIR=/var/www/go-workspace/sdl/sdl_db_backup/remediation/production-backups
-BACKUP_LOG_DIR=/mnt/volume_1/backup/mysql_backup/logs
-BACKUP_LOCK_FILE=/mnt/volume_1/backup/mysql_backup/logs/backup.lock
+BACKUP_LOG_DIR=/mnt/volume_1/backup/logs/sdl-db-backup
+BACKUP_LOCK_FILE=/mnt/volume_1/backup/logs/sdl-db-backup/backup.lock
 BACKUP_STORAGE_AUTO_CLEANUP=true
+BACKUP_LOCAL_MAX_BACKUPS=4
 BACKUP_STORAGE_ESTIMATE_BYTES=0
 BACKUP_STORAGE_RESERVE_BYTES=2147483648
 BACKUP_STORAGE_HIGH_WATERMARK=92
@@ -146,8 +240,10 @@ the destination filesystem and checked during capture.
 At 92% usage, cleanup targets 90% usage or required capture capacity, whichever
 requires more free space. It removes only eligible obsolete local payloads,
 oldest eligible first, with full independent S3 proof and protected local/offsite
-coverage. At least one complete local and two verified complete offsite points
-are required; the two latest local points are preferred. No remote deletion is
+coverage. At least one independently verified complete logical local point and two
+verified complete offsite points are required. The configured count is
+protected, reserving one slot before a logical capture; a capacity emergency
+can reduce local copies further while preserving those minimum safeguards. No remote deletion is
 enabled. Metadata, pinned/restore-tested points, uniquely useful partials,
 physical components and binlog dependencies remain protected.
 
@@ -158,7 +254,9 @@ BACKUP_ENV_FILE=.env ./sdl-db-backup storage-plan
 ```
 
 Legacy GFS quarantine remains disabled and is bypassed while the storage manager
-is enabled. Original-volume backups remain outside this cleanup destination.
+is enabled. On October 19, obsolete payloads in the original-volume and diagnostic
+capture locations were removed after current-backup verification; their metadata
+remains. Recurring count retention applies to the configured active destination.
 No secondary path is approved; insufficient safe capacity fails CRITICAL.
 Logical remote-only streaming is not enabled. Existing physical streaming is
 preserved with separate capacity checking of its work directory.
@@ -194,7 +292,8 @@ Future runs set duration before freezing the uploaded manifest.
 
 Physical verification now uses every remote chunk and xbcloud source MD5,
 recording SHA-256 independently of multipart ETags. The installed binary
-supports `--md5`; live physical capture/preparation remains unverified.
+supports `--md5`; the October 19 physical capture and every remote chunk were
+verified. Physical preparation and recovery remain unverified.
 
 Existing metrics report last-capture preflight capacity, complete/partial capture
 status and remote integrity; TUI/health measures current capacity. Prometheus

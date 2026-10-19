@@ -29,6 +29,7 @@ type StorageRemoteProof struct {
 	VerifiedAt     time.Time             `json:"verified_at"`
 	State          string                `json:"state"`
 	RestoreState   string                `json:"restore_state"`
+	LogicalOnly    bool                  `json:"logical_only,omitempty"`
 	ManifestSHA256 string                `json:"manifest_sha256"`
 	Objects        []StorageRemoteObject `json:"objects"`
 	Manifest       runRecord             `json:"-"`
@@ -69,6 +70,14 @@ func storageJSON(ctx context.Context, cfg config, key string) ([]byte, error) {
 // Independently downloads every byte. Completion markers and ETags alone are
 // not verification. gzip/SQL checks do not constitute a restore test.
 func verifyStorageRemote(ctx context.Context, cfg config, id string) (StorageRemoteProof, error) {
+	return verifyStorageRemoteCapture(ctx, cfg, id, false)
+}
+
+func verifyStorageRemoteLogical(ctx context.Context, cfg config, id string) (StorageRemoteProof, error) {
+	return verifyStorageRemoteCapture(ctx, cfg, id, true)
+}
+
+func verifyStorageRemoteCapture(ctx context.Context, cfg config, id string, allowPhysicalFailure bool) (StorageRemoteProof, error) {
 	proof := StorageRemoteProof{RunID: id, State: "UNVERIFIED", RestoreState: "UNVERIFIED"}
 	if _, err := time.Parse(runTimestampLayout, id); err != nil {
 		return proof, fmt.Errorf("invalid recovery run id")
@@ -76,6 +85,11 @@ func verifyStorageRemote(ctx context.Context, cfg config, id string) (StorageRem
 	prefix := strings.Trim(cfg.S3LogicalPrefix, "/") + "/" + id
 	proof.Destination = "s3://" + cfg.S3Bucket + "/" + prefix
 	raw, err := storageJSON(ctx, cfg, prefix+"/COMPLETED.json")
+	partial := false
+	if err != nil && allowPhysicalFailure {
+		raw, err = storageJSON(ctx, cfg, prefix+"/PARTIAL.json")
+		partial = true
+	}
 	if err != nil {
 		return proof, err
 	}
@@ -83,7 +97,7 @@ func verifyStorageRemote(ctx context.Context, cfg config, id string) (StorageRem
 	if err = json.Unmarshal(raw, &marker); err != nil {
 		return proof, err
 	}
-	if marker.Status != "COMPLETE" || marker.FormatVersion < 2 || marker.RunID != id || marker.Bucket != cfg.S3Bucket || marker.Prefix != prefix {
+	if ((!partial && marker.Status != "COMPLETE") || (partial && marker.Status != "PARTIAL")) || marker.FormatVersion < 2 || marker.RunID != id || marker.Bucket != cfg.S3Bucket || marker.Prefix != prefix {
 		return proof, fmt.Errorf("untrusted or incomplete remote recovery marker")
 	}
 	expected := append([]string(nil), cfg.LogicalDatabases...)
@@ -121,6 +135,10 @@ func verifyStorageRemote(ctx context.Context, cfg config, id string) (StorageRem
 	var record runRecord
 	if err = json.Unmarshal(raw, &record); err != nil {
 		return proof, err
+	}
+	persistedRecord := record
+	if partial {
+		record = logicalStorageRecord(record)
 	}
 	if record.RunID != id || record.Status != "success" || record.RecoveryState != "COMPLETE" || record.DatabasesFailed != 0 || record.FailureReason != "" || record.DatabasesSucceeded != len(expected) || record.DatabasesTotal != len(expected) || len(record.Results) != len(expected) || len(record.LogicalOmissions) > 0 || record.LogicalBackupScope != "" {
 		return proof, fmt.Errorf("remote recovery point is partial")
@@ -226,7 +244,8 @@ func verifyStorageRemote(ctx context.Context, cfg config, id string) (StorageRem
 		}
 		proof.Objects = append(proof.Objects, observed)
 	}
-	proof.Manifest = record
+	proof.Manifest = persistedRecord
+	proof.LogicalOnly = partial
 	proof.ManifestSHA256 = meta.SHA256
 	proof.State = "VERIFIED"
 	proof.VerifiedAt = time.Now().UTC()
@@ -282,8 +301,13 @@ func checkStorageRemoteIdentity(ctx context.Context, cfg config, p StorageRemote
 			return err
 		}
 	}
-	// Re-fetch the marker to prevent accepting a changed or removed commitment.
-	raw, err := storageJSON(ctx, cfg, strings.Trim(cfg.S3LogicalPrefix, "/")+"/"+p.RunID+"/COMPLETED.json")
+	// Re-fetch the same kind of commitment that was fully verified. A PARTIAL
+	// marker proves only the independently checked logical component.
+	markerName, expectedStatus := "COMPLETED.json", "COMPLETE"
+	if p.LogicalOnly {
+		markerName, expectedStatus = "PARTIAL.json", "PARTIAL"
+	}
+	raw, err := storageJSON(ctx, cfg, strings.Trim(cfg.S3LogicalPrefix, "/")+"/"+p.RunID+"/"+markerName)
 	if err != nil {
 		return err
 	}
@@ -291,7 +315,7 @@ func checkStorageRemoteIdentity(ctx context.Context, cfg config, p StorageRemote
 	if err = json.Unmarshal(raw, &marker); err != nil {
 		return err
 	}
-	if marker.Status != "COMPLETE" || marker.RunID != p.RunID {
+	if marker.Status != expectedStatus || marker.RunID != p.RunID {
 		return fmt.Errorf("remote commitment changed")
 	}
 	for _, a := range marker.Artifacts {

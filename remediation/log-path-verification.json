@@ -1,0 +1,38 @@
+{
+  "observed_at": "2026-10-19T09:39:25.316795+00:00",
+  "canonical_log_dir": "/mnt/volume_1/backup/logs/sdl-db-backup",
+  "configured_lock_file": "/mnt/volume_1/backup/logs/sdl-db-backup/backup.lock",
+  "runtime_files_preserved": 1852,
+  "archive_migrations": [
+    {
+      "old_path": "/var/www/go-workspace/sdl/sdl_db_backup/remediation/oneoff-logs",
+      "canonical_path": "/mnt/volume_1/backup/logs/sdl-db-backup/diagnostics",
+      "files": 25,
+      "bytes": 34186731
+    },
+    {
+      "old_path": "/var/www/go-workspace/sdl/sdl_db_backup/.tmp-smoke/logs",
+      "canonical_path": "/mnt/volume_1/backup/logs/sdl-db-backup/diagnostics/smoke",
+      "files": 5,
+      "bytes": 9140
+    }
+  ],
+  "private_diagnostics_mode": "0o700",
+  "shared_lock_exclusion": "PASS",
+  "migration_self_test": "PASS",
+  "history_records": 1016,
+  "schedule_state": {
+    "logical_last_success": "2026-10-19T08:49:58Z",
+    "physical_last_success": "2026-10-19T08:57:23Z"
+  },
+  "collector_ready": "Ready",
+  "collector_backup_log_files": 1675,
+  "collector_active_file_targets": 2,
+  "compatibility_links": {
+    "old_runtime": "/mnt/volume_1/backup/logs/sdl-db-backup",
+    "old_diagnostics": "/mnt/volume_1/backup/logs/sdl-db-backup/diagnostics",
+    "old_smoke_logs": "/mnt/volume_1/backup/logs/sdl-db-backup/diagnostics/smoke"
+  },
+  "env_mode": "0o600",
+  "local_backup_limit": 4
+}

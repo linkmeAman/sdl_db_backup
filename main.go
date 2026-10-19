@@ -26,6 +26,23 @@ func main() {
 		fmt.Printf("run=%s state=%s databases=%d/%d remote_integrity=%s\n", r.RunID, r.RecoveryState, r.DatabasesSucceeded, r.DatabasesTotal, r.RemoteIntegrityState)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "storage-cleanup" {
+		if len(os.Args) != 2 {
+			log.Fatal("Usage: sdl-db-backup storage-cleanup")
+		}
+		cfg, err := backupapp.LoadEffectiveConfig(os.Getenv("BACKUP_ENV_FILE"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		report, err := backupapp.ApplyStorageRecovery(context.Background(), cfg)
+		if e := json.NewEncoder(os.Stdout).Encode(report); e != nil {
+			log.Fatal(e)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "storage-plan" {
 		cfg, err := backupapp.LoadEffectiveConfig(os.Getenv("BACKUP_ENV_FILE"))
 		if err != nil {

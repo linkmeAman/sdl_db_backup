@@ -348,6 +348,8 @@ func GetHealthReport(ctx context.Context, envPath string) (HealthReport, error) 
 	report.LatestRun = latestRun
 	report.Capacity, _ = preflightCapacity(cfg, cfg.LogicalEnabled)
 	report.StorageManagement = readStorageReport(cfg)
+	report.StorageManagement.LocalBackupLimit = cfg.StorageMaxLocalBackups
+	report.StorageManagement.LocalBackupCount, _ = localPayloadRunCount(cfg.BackupDir)
 	report.Recovery = recoveryHealth(cfg)
 	return report, nil
 }

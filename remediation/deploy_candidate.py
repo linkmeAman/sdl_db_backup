@@ -14,6 +14,7 @@ import re
 import subprocess
 import tempfile
 from zoneinfo import ZoneInfo
+from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE = ROOT / 'remediation'
@@ -83,7 +84,11 @@ def require_idle():
 
 def locked_operation(action):
     # Use the same inode and PID protocol as the new runner and reject legacy owners.
-    lock = Path('/mnt/volume_1/backup/mysql_backup/logs/backup.lock')
+    values = dict(dotenv_values(os.environ.get('BACKUP_ENV_FILE', str(ROOT / '.env'))))
+    values.update({key: value for key, value in os.environ.items() if value.strip()})
+    backup_dir = Path(values.get('BACKUP_DIR') or ROOT / 'backups')
+    log_dir = Path(values.get('BACKUP_LOG_DIR') or backup_dir / 'logs')
+    lock = Path(values.get('BACKUP_LOCK_FILE') or log_dir / 'backup.lock')
     with lock.open('a+') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         stream.seek(0)

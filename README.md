@@ -451,3 +451,21 @@ space, protected points and the forecast without further cleanup. Deletion audit
 are under `BACKUP_LOG_DIR/storage-deletions/`; latest health is in
 `BACKUP_LOG_DIR/storage-status.json`. See
 [production storage evidence and rollback](remediation/STORAGE_RECOVERY.md).
+
+### Limit local backups by count
+
+With `BACKUP_STORAGE_AUTO_CLEANUP=true`, set `BACKUP_LOCAL_MAX_BACKUPS=4` to
+keep at most four local logical dump runs. The default `0` disables the count
+limit; a configured limit must be at least three. Cleanup reserves a slot
+before capture and deletes older payloads only after independent local/offsite
+verification. Metadata and S3 history remain. Protected or unverified artifacts
+can block cleanup and a new capture when the limit cannot be met safely.
+
+Preview with `./sdl-db-backup storage-plan`; enforce the configured policy
+without starting a capture with `./sdl-db-backup storage-cleanup`.
+
+Production backup logs, history, schedule state, shared lock and deletion audits
+are consolidated at `/mnt/volume_1/backup/logs/sdl-db-backup`; historical
+one-off and smoke-test logs are under its private `diagnostics/` subdirectory.
+See [production configuration](PRODUCTION_CONFIGURATION.md) for compatibility
+links and verification evidence.

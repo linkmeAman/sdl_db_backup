@@ -89,6 +89,7 @@ func storageVirtualManager(cfg config, v *storageVirtualFS, points map[string]ru
 		}
 		return StorageRemoteProof{RunID: id, State: "VERIFIED", RestoreState: "UNVERIFIED", Destination: "s3://bucket/logical/" + id, VerifiedAt: time.Now(), Manifest: r}, nil
 	}
+	m.remoteLogical = m.remote
 	m.identity = func(context.Context, config, StorageRemoteProof) error { return nil }
 	m.remove = func(root string, d StorageDecision) (int64, error) {
 		if v.failedRemove {
@@ -775,5 +776,164 @@ func TestStorageCriticalPreflightFinalizesFailedRunAndAlertMetric(t *testing.T) 
 	}
 	for _, point := range points {
 		assertPointPresent(t, point)
+	}
+}
+
+func TestStorageCountRetentionWithoutDiskPressure(t *testing.T) {
+	for _, reserveCapture := range []bool{false, true} {
+		t.Run(fmt.Sprint(reserveCapture), func(t *testing.T) {
+			cfg, v, m, points, _ := storagePoints(t, 6)
+			cfg.StorageMaxLocalBackups = 4
+			m.cfg = cfg
+			v.available = 9000
+			current := ""
+			want := 4
+			if reserveCapture {
+				current = "2026-10-07_12-00-00"
+				want = 3
+			}
+			report, err := m.ensure(context.Background(), current, true, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count, err := localPayloadRunCount(cfg.BackupDir)
+			if err != nil || count != want || report.RemovedBytes == 0 {
+				t.Fatalf("count=%d want=%d report=%+v error=%v", count, want, report, err)
+			}
+			for day := 7 - want; day <= 6; day++ {
+				assertPointPresent(t, points[fmt.Sprintf("2026-10-%02d_12-00-00", day)])
+			}
+		})
+	}
+}
+
+func TestStorageCountRetentionRefusesUnverifiedCounterpart(t *testing.T) {
+	cfg, v, m, points, _ := storagePoints(t, 5)
+	cfg.StorageMaxLocalBackups = 4
+	m.cfg = cfg
+	v.available = 9000
+	delete(points, "2026-10-01_12-00-00")
+	report, err := m.ensure(context.Background(), "", true, false)
+	if err == nil || report.State != "CRITICAL" {
+		t.Fatal("unverifiable deletion must block an unmet count cap")
+	}
+	count, _ := localPayloadRunCount(cfg.BackupDir)
+	if count != 5 {
+		t.Fatalf("unexpected deletion: count=%d", count)
+	}
+}
+
+func TestStoragePhysicalFailureDoesNotEraseLogicalEvidence(t *testing.T) {
+	cfg, _, _, points, s3 := storagePoints(t, 1)
+	r := points["2026-10-01_12-00-00"]
+	r.Status = "partial"
+	r.RecoveryState = "PARTIAL"
+	r.PhysicalBackup = &physicalBackupResult{Status: "failed", Error: "physical disk full"}
+	r.FailureReason = r.PhysicalBackup.Error
+	if err := writeManifest(r.RunFolder, r); err != nil {
+		t.Fatal(err)
+	}
+	s3.add(t, r)
+	s3.mu.Lock()
+	prefix := "logical/" + r.RunID + "/"
+	var marker logicalCompletionManifest
+	if err := json.Unmarshal(s3.objects[prefix+"COMPLETED.json"], &marker); err != nil {
+		t.Fatal(err)
+	}
+	marker.Status = "PARTIAL"
+	raw, _ := json.Marshal(marker)
+	s3.objects[prefix+"PARTIAL.json"] = raw
+	delete(s3.objects, prefix+"COMPLETED.json")
+	s3.mu.Unlock()
+	if _, err := verifyStorageRemote(context.Background(), cfg, r.RunID); err == nil {
+		t.Fatal("PARTIAL marker passed complete recovery gate")
+	}
+	proof, err := verifyStorageRemoteLogical(context.Background(), cfg, r.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proof.LogicalOnly || proof.Manifest.RecoveryState != "PARTIAL" {
+		t.Fatal("physical failure evidence lost")
+	}
+	if err := checkStorageRemoteIdentity(context.Background(), cfg, proof); err != nil {
+		t.Fatal(err)
+	}
+	s3.mu.Lock()
+	delete(s3.objects, prefix+"PARTIAL.json")
+	s3.mu.Unlock()
+	if err := checkStorageRemoteIdentity(context.Background(), cfg, proof); err == nil {
+		t.Fatal("removed partial commitment accepted")
+	}
+	copy := logicalStorageRecord(r)
+	if err := verifyLogicalCapture(cfg, copy, r.RunFolder); err != nil {
+		t.Fatal(err)
+	}
+	original, _ := readManifest(r.RunFolder)
+	if original.Status != "partial" || original.RecoveryState != "PARTIAL" {
+		t.Fatal("original manifest mutated")
+	}
+	r.DatabasesFailed = 1
+	if logicalStorageRecord(r).Status != "partial" {
+		t.Fatal("logical failure promoted")
+	}
+}
+
+func TestStorageLocalCountConfigRoundTrip(t *testing.T) {
+	cfg := storageTestConfig(t, t.TempDir())
+	cfg.StorageMaxLocalBackups = 4
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil || loaded.StorageMaxLocalBackups != 4 {
+		t.Fatalf("count setting lost: %v %+v", err, loaded.StorageMaxLocalBackups)
+	}
+	cfg.StorageMaxLocalBackups = 2
+	if err := SaveConfig(path, cfg); err == nil {
+		t.Fatal("unsafe two-point cap accepted")
+	}
+}
+
+func TestStorageCountRetentionWithRealPartialIdentityRecheck(t *testing.T) {
+	cfg, v, _, points, s3 := storagePoints(t, 6)
+	cfg.StorageMaxLocalBackups = 4
+	v.available = 9000
+	old := points["2026-10-01_12-00-00"]
+	old.Status = "partial"
+	old.RecoveryState = "PARTIAL"
+	old.PhysicalBackup = &physicalBackupResult{Status: "failed", Error: "physical capacity unavailable"}
+	old.FailureReason = old.PhysicalBackup.Error
+	if err := writeManifest(old.RunFolder, old); err != nil {
+		t.Fatal(err)
+	}
+	s3.add(t, old)
+	prefix := "logical/" + old.RunID + "/"
+	s3.mu.Lock()
+	var marker logicalCompletionManifest
+	if err := json.Unmarshal(s3.objects[prefix+"COMPLETED.json"], &marker); err != nil {
+		t.Fatal(err)
+	}
+	marker.Status = "PARTIAL"
+	raw, _ := json.Marshal(marker)
+	s3.objects[prefix+"PARTIAL.json"] = raw
+	delete(s3.objects, prefix+"COMPLETED.json")
+	s3.mu.Unlock()
+	m := storageManagerFactory(cfg)
+	m.capacity = v.capacity
+	report, err := m.ensure(context.Background(), "", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := localPayloadRunCount(cfg.BackupDir)
+	if err != nil || count != 4 || report.LocalBackupCount != 4 {
+		t.Fatalf("count=%d report=%+v err=%v", count, report, err)
+	}
+	for day := 3; day <= 6; day++ {
+		assertPointPresent(t, points[fmt.Sprintf("2026-10-%02d_12-00-00", day)])
+	}
+	original, err := readManifest(old.RunFolder)
+	if err != nil || original.RecoveryState != "PARTIAL" {
+		t.Fatal("historical manifest was changed")
 	}
 }

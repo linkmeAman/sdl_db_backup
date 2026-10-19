@@ -1119,6 +1119,7 @@ func (m model) viewSystemd(width int) string {
 		"Desired schedule: "+m.systemd.DesiredSchedule,
 		fmt.Sprintf("Storage: available=%d total=%d usable=%d required=%d sufficient=%t free_inodes=%d", m.health.Capacity.AvailableBytes, m.health.Capacity.TotalBytes, m.health.Capacity.UsableBytes, m.health.Capacity.RequiredBytes, m.health.Capacity.Sufficient, m.health.Capacity.FreeInodes),
 		fmt.Sprintf("Automatic storage: state=%s reclaimed=%d protected_local=%d protected_S3=%d protection_rechecked=%t", m.health.StorageManagement.State, m.health.StorageManagement.ReclaimedBytes, len(m.health.StorageManagement.ProtectedLocal), len(m.health.StorageManagement.ProtectedRemote), m.health.StorageManagement.ProtectionChecked),
+		fmt.Sprintf("Local backup payloads: %d; configured maximum: %d (0 disables count limit)", m.health.StorageManagement.LocalBackupCount, m.health.StorageManagement.LocalBackupLimit),
 		fmt.Sprintf("Storage forecast without further cleanup: %.1f days; fallback=%s", m.health.StorageManagement.ForecastDays, m.health.StorageManagement.Fallback),
 		"Storage recovery detail: "+m.health.StorageManagement.Error,
 		"Latest complete capture: "+m.health.Recovery.LatestCompleteID,

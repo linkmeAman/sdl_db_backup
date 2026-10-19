@@ -1,0 +1,69 @@
+{
+  "observed_at": "2026-10-19T10:21:44.995376+00:00",
+  "run_id": "2026-10-19_15-21-15",
+  "configuration_source": "/var/www/go-workspace/sdl/sdl_db_backup/.env",
+  "configured_paths": {
+    "BACKUP_DIR": "/var/www/go-workspace/sdl/sdl_db_backup/remediation/production-backups",
+    "BACKUP_LOG_DIR": "/mnt/volume_1/backup/logs/sdl-db-backup",
+    "BACKUP_LOCK_FILE": "/mnt/volume_1/backup/logs/sdl-db-backup/backup.lock",
+    "BACKUP_XTRABACKUP_WORK_DIR": "/mnt/volume_1/backup/xtrabackup-tmp"
+  },
+  "checks": {
+    "all_configured_databases_succeeded": true,
+    "backup_complete": true,
+    "local_s3_payload_integrity_verified": true,
+    "count_limit_enforced": true,
+    "new_log_in_configured_directory": true,
+    "private_env_permissions": true,
+    "backup_lock_released": true,
+    "rebuilt_binaries_installed": true
+  },
+  "backup_verdict": "VERIFIED",
+  "local_payload_runs": [
+    "2026-10-19_06-00-00",
+    "2026-10-19_12-00-01",
+    "2026-10-19_13-58-22",
+    "2026-10-19_15-21-15"
+  ],
+  "local_limit": 4,
+  "s3_destination": "s3://ticklerightbackups/recovery-hold/logical/2026-10-19_15-21-15/",
+  "database_count": 6,
+  "capture_duration": "21m25.298s",
+  "collector": {
+    "ready": "Ready",
+    "new_run_file_tracked": true,
+    "new_run_visible_in_loki": true,
+    "timezone_fix_applied": true,
+    "pending_action": null,
+    "delivery_probe": {
+      "observed_at": "2026-10-19T10:21:44.995376+00:00",
+      "run_id": "2026-10-19_15-21-15",
+      "collector_ready": "Ready",
+      "probe_id": "sdl-log-delivery-verification-1e34ea376cf74f8d9e5151e4384b4e40",
+      "loki_delivery_verified": true,
+      "loki_entry_count": 1,
+      "probe_label": "diagnostic verification only; backup contents unchanged"
+    }
+  },
+  "binaries_match_build": {
+    "sdl-db-backup": true,
+    "sdl-db-backup-health": true,
+    "sdl-db-backup-tui": true
+  },
+  "git": {
+    "local_head": "444f5639aa26964254742a832c6d0c6bb79b0573",
+    "remote_master": "444f5639aa26964254742a832c6d0c6bb79b0573",
+    "committed_heads_match": true,
+    "uncommitted_changes": true,
+    "working_change_count": 30,
+    "working_changes_synced": false
+  },
+  "tests": [
+    "go test ./...: PASS",
+    "go test -race ./...: PASS",
+    "8 Python deployment transaction tests: PASS",
+    "alternate config and log migration with spaces: PASS",
+    "Promtail rendered config syntax: PASS"
+  ],
+  "restore_test_performed": false
+}

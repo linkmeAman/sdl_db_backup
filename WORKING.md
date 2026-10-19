@@ -17,7 +17,7 @@ health / validation CLI ┘             ├──> local artifacts, manifests, l
 
 | Component | Responsibility |
 | --- | --- |
-| `main.go` | Non-interactive runner plus `inspect`, `decrypt`, `physical-validate`, `retention-plan`, and restricted `reconcile-capture` commands. |
+| `main.go` | Non-interactive runner plus `inspect`, `decrypt`, `physical-validate`, `retention-plan`, `storage-plan`, `storage-cleanup`, and restricted `reconcile-capture` commands. |
 | `internal/backupapp` | Shared configuration, scheduling, dumping, encryption, validation, S3, retention, metrics, health, and API logic. |
 | `cmd/sdl-db-backup-tui` / `internal/tui` | Bubble Tea operator console. |
 | `cmd/sdl-db-backup-schedule` | Render or explicitly apply/verify the authoritative timer with rollback. |
@@ -184,9 +184,18 @@ Every run produces:
 
 See [GRAFANA_BACKUP_MONITORING.md](GRAFANA_BACKUP_MONITORING.md) for metric
 definitions and alert recommendations. For live log streaming, use the sample
-Promtail configuration in [loki/promtail-config.yml](loki/promtail-config.yml).
+Promtail template in [loki/promtail-config.yml](loki/promtail-config.yml).
+Render it with `python3 loki/render_config.py --env .env --output /tmp/sdl-promtail.yml`
+before installation. Log location and timestamp timezone come from configuration
+and the runner host timezone. `BACKUP_LOG_TIMEZONE` can override collector parsing.
 
 ## Storage recovery before capture
+
+`BACKUP_LOCAL_MAX_BACKUPS` optionally enforces a local logical payload count
+independently of disk pressure, reserving one slot before capture. `storage-cleanup`
+applies the same verified policy without capture. A failed physical task can be
+separated in memory for logical eviction verification; committed PARTIAL records
+remain unchanged and do not satisfy complete offsite coverage.
 
 The runner acquires its shared scheduler/TUI lock, measures the destination,
 estimates peak capture capacity and invokes the local storage manager before
