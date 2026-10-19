@@ -489,6 +489,7 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 	addString("Reliability", "BACKUP_SCHEDULE_TIMEZONE", "Schedule Timezone", cfg.ScheduleTimezone, false, func(c *backupapp.Config, v string) { c.ScheduleTimezone = v })
 	addString("Reliability", "BACKUP_LOGICAL_CONSISTENCY", "Logical Consistency", cfg.LogicalConsistency, false, func(c *backupapp.Config, v string) { c.LogicalConsistency = v })
 	addBool("Storage", "BACKUP_STORAGE_AUTO_CLEANUP", "Authorize Automatic Local Cleanup", cfg.StorageAutoCleanup, func(c *backupapp.Config, v bool) { c.StorageAutoCleanup = v })
+	addInt("Storage", "BACKUP_LOCAL_MAX_BACKUPS", "Maximum Local Backups (0 disables)", cfg.StorageMaxLocalBackups, func(c *backupapp.Config, v int) { c.StorageMaxLocalBackups = v })
 	addInt("Storage", "BACKUP_STORAGE_HIGH_WATERMARK", "Cleanup High Watermark %", cfg.StorageHighWatermark, func(c *backupapp.Config, v int) { c.StorageHighWatermark = v })
 	addInt("Storage", "BACKUP_STORAGE_LOW_WATERMARK", "Cleanup Low Watermark %", cfg.StorageLowWatermark, func(c *backupapp.Config, v int) { c.StorageLowWatermark = v })
 	addInt("Storage", "BACKUP_STORAGE_GROWTH_PERCENT", "Capture Growth Margin %", cfg.StorageGrowthPercent, func(c *backupapp.Config, v int) { c.StorageGrowthPercent = v })

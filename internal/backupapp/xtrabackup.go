@@ -322,7 +322,7 @@ func runPhysicalBackupAttempt(cfg config, runDir string) physicalBackupResult {
 	}
 	workDir := strings.TrimSpace(cfg.XtrabackupWorkDir)
 	if workDir == "" {
-		workDir = "/srv/backup/xtrabackup-tmp"
+		workDir = filepath.Join(cfg.BackupDir, "xtrabackup-work")
 	}
 	// Physical capture already streams remotely; account only for bounded local
 	// control/FIFO files. Never delete physical components to make space.

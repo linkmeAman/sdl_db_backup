@@ -47,6 +47,8 @@ type StorageReport struct {
 	Error             string               `json:"error,omitempty"`
 	ForecastDays      float64              `json:"forecast_days"`
 	ProtectionChecked bool                 `json:"protection_checked"`
+	LocalBackupLimit  int                  `json:"local_backup_limit,omitempty"`
+	LocalBackupCount  int                  `json:"local_backup_count"`
 }
 type storageRun struct {
 	r      runRecord
@@ -60,6 +62,7 @@ type storageManager struct {
 	capacity       func(config, bool) (CapacityReport, error)
 	local          func(config, runRecord, string) error
 	remote         func(context.Context, config, string) (StorageRemoteProof, error)
+	remoteLogical  func(context.Context, config, string) (StorageRemoteProof, error)
 	identity       func(context.Context, config, StorageRemoteProof) error
 	remove         func(string, StorageDecision) (int64, error)
 	now            func() time.Time
@@ -67,7 +70,7 @@ type storageManager struct {
 }
 
 var storageManagerFactory = func(cfg config) *storageManager {
-	return &storageManager{cfg: cfg, capacity: preflightCapacity, local: verifyLogicalCapture, remote: verifyStorageRemote, identity: checkStorageRemoteIdentity, remove: unlinkStoragePayload, now: time.Now}
+	return &storageManager{cfg: cfg, capacity: preflightCapacity, local: verifyLogicalCapture, remote: verifyStorageRemote, remoteLogical: verifyStorageRemoteLogical, identity: checkStorageRemoteIdentity, remove: unlinkStoragePayload, now: time.Now}
 }
 
 func isStoragePayload(name string) bool {
@@ -82,6 +85,9 @@ func storageTemporaryName(name string) bool {
 	return err == nil
 }
 func storagePolicy(cfg config) error {
+	if cfg.StorageMaxLocalBackups != 0 && cfg.StorageMaxLocalBackups < 3 {
+		return fmt.Errorf("BACKUP_LOCAL_MAX_BACKUPS must be zero (disabled) or at least three to preserve two points while capturing")
+	}
 	if cfg.StorageHighWatermark <= 0 || cfg.StorageHighWatermark > 99 || cfg.StorageLowWatermark <= 0 || cfg.StorageLowWatermark >= cfg.StorageHighWatermark {
 		return fmt.Errorf("storage low/high watermarks must satisfy 0 < low < high < 100")
 	}
@@ -97,6 +103,55 @@ func PlanStorageRecovery(ctx context.Context, cfg Config) (StorageReport, error)
 	}
 	defer release()
 	return storageManagerFactory(cfg).ensure(ctx, "", cfg.LogicalEnabled, true)
+}
+
+// ApplyStorageRecovery enforces configured local retention without starting a capture.
+func ApplyStorageRecovery(ctx context.Context, cfg Config) (StorageReport, error) {
+	release, err := acquireLock(cfg.LockFile)
+	if err != nil {
+		return StorageReport{}, err
+	}
+	defer release()
+	return storageManagerFactory(cfg).ensure(ctx, "", cfg.LogicalEnabled, false)
+}
+
+// logicalStorageRecord isolates a complete logical capture from a failed physical
+// task. This copy is used only for independent verification and local eviction;
+// the original PARTIAL manifest and remote marker remain immutable.
+func logicalStorageRecord(r runRecord) runRecord {
+	if r.Status == "partial" && r.PhysicalBackup != nil && r.PhysicalBackup.Status == "failed" && r.PhysicalBackup.Error != "" && r.FailureReason == r.PhysicalBackup.Error && r.DatabasesTotal > 0 && r.DatabasesSucceeded == r.DatabasesTotal && r.DatabasesFailed == 0 && r.LogicalBackupScope == "" && len(r.LogicalOmissions) == 0 {
+		r.Status = "success"
+		r.FailureReason = ""
+		r.RecoveryState = "COMPLETE"
+	}
+	return r
+}
+
+func localPayloadRunCount(root string) (int, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		if _, err := time.Parse(runTimestampLayout, entry.Name()); err != nil {
+			continue
+		}
+		children, err := os.ReadDir(filepath.Join(root, entry.Name()))
+		if err != nil {
+			return count, err
+		}
+		for _, child := range children {
+			if isStoragePayload(child.Name()) || storageTemporaryName(child.Name()) {
+				count++
+				break
+			}
+		}
+	}
+	return count, nil
 }
 
 // Called while the global backup lock is held. It additionally serializes all
@@ -133,7 +188,18 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	if err = storagePolicy(m.cfg); err != nil {
 		return report, err
 	}
-	pressure := capacityErr != nil || initial.UsedPercent >= float64(m.cfg.StorageHighWatermark)
+	limit := m.cfg.StorageMaxLocalBackups
+	if limit > 0 && current != "" && logical {
+		limit--
+	} // reserve one slot before creating a new dump
+	report.LocalBackupLimit = limit
+	count, countErr := localPayloadRunCount(m.cfg.BackupDir)
+	if countErr != nil {
+		return report, countErr
+	}
+	report.LocalBackupCount = count
+	overLimit := limit > 0 && count > limit
+	pressure := capacityErr != nil || initial.UsedPercent >= float64(m.cfg.StorageHighWatermark) || overLimit
 	if !pressure && !dry {
 		// Existing independently verified protection counts remain observable; they
 		// are re-established from actual artifacts before any deletion.
@@ -179,8 +245,9 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	m.protectedFiles = map[string][]StorageDecision{}
 	for i := range runs {
 		r := &runs[i]
-		if r.r.Status == "success" && len(r.r.Results) > 0 && r.r.MySQLPITR == nil && (len(localGood) < 2 || runHasSuccessfulRestoreValidation(r.folder) || fileExists(filepath.Join(r.folder, ".recovery-pin"))) {
-			if e := m.local(m.cfg, r.r, r.folder); e == nil {
+		if logicalStorageRecord(r.r).Status == "success" && len(r.r.Results) > 0 && r.r.MySQLPITR == nil && (len(localGood) < max(2, limit) || runHasSuccessfulRestoreValidation(r.folder) || fileExists(filepath.Join(r.folder, ".recovery-pin"))) {
+			if e := m.local(m.cfg, logicalStorageRecord(r.r), r.folder); e == nil {
+				log.Printf("storage local capture verified run=%s", r.r.RunID)
 				r.valid = true
 				localGood = append(localGood, *r)
 				m.protectedFiles[r.r.RunID] = r.files
@@ -190,7 +257,7 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	if len(localGood) == 0 {
 		return m.blocked(report, "no independently valid complete local recovery point; deletion refused", logical)
 	}
-	preferred := min(2, len(localGood))
+	preferred := min(max(2, limit), len(localGood))
 	for i := 0; i < preferred; i++ {
 		report.ProtectedLocal = append(report.ProtectedLocal, localGood[i].r.RunID)
 	}
@@ -215,6 +282,17 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 			if _, e := time.Parse(runTimestampLayout, parts[0]); e == nil {
 				ids[parts[0]] = true
 			}
+		}
+	}
+	remoteIDs := map[string]bool{}
+	for id := range ids {
+		remoteIDs[id] = true
+	}
+	for _, o := range listing.Objects {
+		rel := strings.TrimPrefix(o.Key, strings.Trim(m.cfg.S3LogicalPrefix, "/")+"/")
+		parts := strings.Split(rel, "/")
+		if len(parts) == 2 && parts[1] == "PARTIAL.json" {
+			remoteIDs[parts[0]] = true
 		}
 	}
 	ordered := []string{}
@@ -272,10 +350,10 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 					f.Reason = "expired application-labelled failed dump; superseded by verified complete capture"
 					candidates = append(candidates, f)
 				}
-			} else if r.r.Status == "success" && ids[r.r.RunID] && referencedStoragePayload(r.r, f) {
+			} else if logicalStorageRecord(r.r).Status == "success" && remoteIDs[r.r.RunID] && referencedStoragePayload(r.r, f) {
 				f.Action = "PENDING_REMOTE_VERIFICATION"
 				f.Type = "complete_logical"
-				f.Reason = "obsolete local duplicate with independently verified complete S3 counterpart"
+				f.Reason = "obsolete local duplicate with independently verified full logical S3 counterpart"
 				f.RemoteRunID = r.r.RunID
 				f.Remote = "s3://" + m.cfg.S3Bucket + "/" + strings.Trim(m.cfg.S3LogicalPrefix, "/") + "/" + r.r.RunID
 				candidates = append(candidates, f)
@@ -339,7 +417,11 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	for _, candidate := range candidates {
 		capacity, e := m.capacity(m.cfg, logical)
 		report.Final = capacity
-		if e == nil && capacity.AvailableBytes >= report.TargetBytes {
+		count, countErr := localPayloadRunCount(root)
+		if countErr != nil {
+			return report, countErr
+		}
+		if e == nil && capacity.AvailableBytes >= report.TargetBytes && (limit == 0 || count <= limit) {
 			break
 		}
 		if fileExists(candidate.Path) {
@@ -410,6 +492,16 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 			report.Fallback = "SECONDARY_UNAVAILABLE"
 		}
 		return report, fmt.Errorf("safe cleanup cannot provide backup capacity; protected recovery points preserved; no usable approved fallback: %w", capacityErr)
+	}
+	if limit > 0 {
+		count, e := localPayloadRunCount(root)
+		if e != nil {
+			return report, e
+		}
+		report.LocalBackupCount = count
+		if count > limit {
+			return report, fmt.Errorf("local backup limit unmet: %d payload runs remain, limit %d; unverified or protected artifacts held", count, limit)
+		}
 	}
 	if report.RemovedBytes > 0 {
 		report.State = "CLEANED"
@@ -514,6 +606,16 @@ func noStorageCapturedArtifacts(r runRecord) bool {
 }
 
 func (m *storageManager) blocked(report StorageReport, reason string, logical bool) (StorageReport, error) {
+	if m.cfg.StorageMaxLocalBackups > 0 {
+		count, e := localPayloadRunCount(m.cfg.BackupDir)
+		if e != nil {
+			return report, e
+		}
+		limit := report.LocalBackupLimit
+		if count > limit {
+			return report, fmt.Errorf("%s; local count limit cannot be safely enforced", reason)
+		}
+	}
 	if report.Initial.Sufficient {
 		report.State = "CLEANUP_DEFERRED"
 		report.Error = reason
@@ -585,7 +687,11 @@ func (m *storageManager) authorizeCandidate(ctx context.Context, d StorageDecisi
 	proof, ok := proofs[d.RemoteRunID]
 	if !ok {
 		var err error
-		proof, err = m.remote(ctx, m.cfg, d.RemoteRunID)
+		verify := m.remote
+		if m.remoteLogical != nil {
+			verify = m.remoteLogical
+		}
+		proof, err = verify(ctx, m.cfg, d.RemoteRunID)
 		if err != nil {
 			return proof, err
 		}

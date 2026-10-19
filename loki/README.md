@@ -29,8 +29,8 @@ without depending on journal access.
 
 ## Quick Start
 
-1. Copy `promtail-config.yml` to your Promtail host.
-2. Replace the `__path__` value so it matches `BACKUP_LOG_DIR/*_*.log`.
+1. Run `python3 loki/render_config.py --env .env --output /tmp/sdl-promtail.yml` from the repository root.
+2. Install the rendered file on your Promtail host. Its `__path__` comes from `BACKUP_LOG_DIR`, or defaults to `BACKUP_DIR/logs`.
 3. Start or reload Promtail.
 4. Add Loki to Grafana with `../grafana/provisioning/datasources/sdl-db-backup-loki-datasource.yml` or configure the datasource manually.
 5. Import `../dashboards/sdl-db-backup-logs.json`.
@@ -42,7 +42,8 @@ Use these commands on a host where Promtail and Grafana are installed.
 ```bash
 sudo install -d -m 755 /etc/promtail /var/lib/promtail
 
-sudo cp /opt/sdl-db-backup/loki/promtail-config.yml \
+python3 loki/render_config.py --env .env --output /tmp/sdl-promtail.yml
+sudo cp /tmp/sdl-promtail.yml \
   /etc/promtail/promtail-config.yml
 
 sudo systemctl enable --now promtail
@@ -69,12 +70,19 @@ sudo cp /opt/sdl-db-backup/dashboards/sdl-db-backup-logs.json \
 sudo systemctl restart grafana-server
 ```
 
-If Promtail cannot read the backup logs, fix the log directory permissions so the Promtail user can traverse and read the per-run files:
+If Promtail cannot read the backup logs, give its service user permission to traverse
+the configured `BACKUP_LOG_DIR` and read the per-run files. Keep the private
+`diagnostics/` directory restricted. Render and install again after changing the
+log directory. The template placeholder is replaced by the renderer; do not install
+the unrendered template directly.
 
-```bash
-sudo chmod 755 /srv/backup/mysql_backup/logs
-sudo chmod 644 /srv/backup/mysql_backup/logs/*_*.log
-```
+The renderer also sets the timestamp parser location from the host timezone,
+with an optional `BACKUP_LOG_TIMEZONE` override. Match the timezone used by the
+backup runner; otherwise local timestamps can be rejected as future entries.
+For an existing installation, `remediation/apply_promtail_log_timezone.py`
+previews a change to only the backup timestamp stage. Run it with explicit
+`--config` paths and add `--apply` under sudo to validate, save rollback copies,
+and restart Promtail. Existing scrape paths and saved positions are preserved.
 
 If Loki is not on the same host, edit the datasource URL in
 `/etc/grafana/provisioning/datasources/sdl-db-backup-loki-datasource.yml`
@@ -124,3 +132,9 @@ Typical lines include:
 - `backup summary status=...`
 
 If you keep the dashboard time range around the active run and use ascending sort, Grafana shows the run from the beginning instead of dropping you into the latest lines first.
+
+Production logs are physically consolidated at
+`/srv/backup/logs/sdl-db-backup`. The deployed collector and its saved
+positions retain the old `/srv/backup/mysql_backup/logs` path through
+a compatibility symlink. Both paths identify the same files; preserve that alias
+unless migrating the collector configuration and position keys together.

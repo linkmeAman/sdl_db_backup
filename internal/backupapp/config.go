@@ -19,6 +19,7 @@ type Config = config
 
 type config struct {
 	StorageAutoCleanup     bool
+	StorageMaxLocalBackups int
 	StorageHighWatermark   int
 	StorageLowWatermark    int
 	StorageGrowthPercent   int
@@ -329,6 +330,7 @@ func loadConfigFromValues(values map[string]string) config {
 	return config{
 
 		StorageAutoCleanup:              getMapBool(values, "BACKUP_STORAGE_AUTO_CLEANUP", false),
+		StorageMaxLocalBackups:          getMapInt(values, "BACKUP_LOCAL_MAX_BACKUPS", 0),
 		StorageHighWatermark:            getMapInt(values, "BACKUP_STORAGE_HIGH_WATERMARK", 92),
 		StorageLowWatermark:             getMapInt(values, "BACKUP_STORAGE_LOW_WATERMARK", 90),
 		StorageGrowthPercent:            getMapInt(values, "BACKUP_STORAGE_GROWTH_PERCENT", 50),
@@ -412,7 +414,7 @@ func loadConfigFromValues(values map[string]string) config {
 		XtrabackupPass:                  getMapValue(values, "BACKUP_XTRABACKUP_PASS", dbPass),
 		XtrabackupSocket:                getMapValue(values, "BACKUP_XTRABACKUP_SOCKET", ""),
 		XtrabackupRunAsUser:             getMapValue(values, "BACKUP_XTRABACKUP_RUN_AS_USER", ""),
-		XtrabackupWorkDir:               getMapValue(values, "BACKUP_XTRABACKUP_WORK_DIR", "/srv/backup/xtrabackup-tmp"),
+		XtrabackupWorkDir:               getMapValue(values, "BACKUP_XTRABACKUP_WORK_DIR", filepath.Join(backupDir, "xtrabackup-work")),
 		APIEnabled:                      getMapBool(values, "BACKUP_API_ENABLED", false),
 		APIListenAddr:                   getMapValue(values, "BACKUP_API_LISTEN_ADDR", "127.0.0.1:8086"),
 		APIBasePath:                     getMapValue(values, "BACKUP_API_BASE_PATH", "/api/v1"),
@@ -581,7 +583,7 @@ func ClearTemporaryOverrides(envPath string) error {
 }
 
 func managedEnvKeys() []string {
-	return []string{"BACKUP_STORAGE_AUTO_CLEANUP", "BACKUP_STORAGE_HIGH_WATERMARK", "BACKUP_STORAGE_LOW_WATERMARK", "BACKUP_STORAGE_GROWTH_PERCENT", "BACKUP_STORAGE_HISTORY_RUNS", "BACKUP_STORAGE_CONCURRENT_BYTES", "BACKUP_STORAGE_TEMPORARY_BYTES", "BACKUP_STORAGE_MIN_FREE_INODES", "BACKUP_STORAGE_TEMP_MAX_AGE", "BACKUP_STORAGE_VERIFY_TIMEOUT", "BACKUP_STORAGE_SECONDARY_DIR", "BACKUP_RETENTION_DELETE_ENABLED", "BACKUP_RETENTION_MIN_COMPLETE", "BACKUP_STORAGE_RESERVE_BYTES", "BACKUP_STORAGE_ESTIMATE_BYTES", "BACKUP_SYSTEMD_SCOPE", "BACKUP_LOGICAL_CONSISTENCY", "BACKUP_SCHEDULE_TIMEZONE", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE",
+	return []string{"BACKUP_LOCAL_MAX_BACKUPS", "BACKUP_STORAGE_AUTO_CLEANUP", "BACKUP_STORAGE_HIGH_WATERMARK", "BACKUP_STORAGE_LOW_WATERMARK", "BACKUP_STORAGE_GROWTH_PERCENT", "BACKUP_STORAGE_HISTORY_RUNS", "BACKUP_STORAGE_CONCURRENT_BYTES", "BACKUP_STORAGE_TEMPORARY_BYTES", "BACKUP_STORAGE_MIN_FREE_INODES", "BACKUP_STORAGE_TEMP_MAX_AGE", "BACKUP_STORAGE_VERIFY_TIMEOUT", "BACKUP_STORAGE_SECONDARY_DIR", "BACKUP_RETENTION_DELETE_ENABLED", "BACKUP_RETENTION_MIN_COMPLETE", "BACKUP_STORAGE_RESERVE_BYTES", "BACKUP_STORAGE_ESTIMATE_BYTES", "BACKUP_SYSTEMD_SCOPE", "BACKUP_LOGICAL_CONSISTENCY", "BACKUP_SCHEDULE_TIMEZONE", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE",
 		"DB_USER",
 		"DB_PASS",
 		"DB_ENGINE",
@@ -668,6 +670,7 @@ func managedEnvKeys() []string {
 func envMapFromConfig(cfg Config) map[string]string {
 	values := map[string]string{
 		"BACKUP_STORAGE_AUTO_CLEANUP":               fmt.Sprint(cfg.StorageAutoCleanup),
+		"BACKUP_LOCAL_MAX_BACKUPS":                  fmt.Sprint(cfg.StorageMaxLocalBackups),
 		"BACKUP_STORAGE_HIGH_WATERMARK":             fmt.Sprint(cfg.StorageHighWatermark),
 		"BACKUP_STORAGE_LOW_WATERMARK":              fmt.Sprint(cfg.StorageLowWatermark),
 		"BACKUP_STORAGE_GROWTH_PERCENT":             fmt.Sprint(cfg.StorageGrowthPercent),
