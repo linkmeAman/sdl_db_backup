@@ -37,7 +37,31 @@ func readManifest(folder string) (runRecord, error) {
 
 // verifyLogicalCapture refuses counters without a matching expected inventory.
 // Legacy successful manifests may be read but still must prove their artifacts.
+// logicalArtifactCheck fully reads one artifact: file and SQL hashes, gzip SQL
+// validation and the object inventory parse.
+var logicalArtifactCheck = func(cfg config, path string, d databaseResult) (map[string]map[string][]string, error) {
+	ok, err := validateLogicalArtifactForEngineWithEncryption(cfg.DBEngine, path, d.ArtifactSHA256, d.SQLSHA256, cfg.EncryptionKey)
+	if err != nil || !ok {
+		return nil, fmt.Errorf("database %q artifact invalid: %v", d.Name, err)
+	}
+	return artifactObjectInventory(path, d.Name, cfg.EncryptionKey)
+}
+
+// verifyLogicalCapture always fully re-reads every artifact. Successful reads
+// seed the storage verification cache used by verifyLogicalCaptureCached.
 func verifyLogicalCapture(cfg config, r runRecord, folder string) error {
+	cache := openStorageVerifyCache(cfg)
+	defer cache.save()
+	return verifyLogicalCaptureWith(cfg, r, folder, func(path string, d databaseResult) (map[string]map[string][]string, error) {
+		inventory, err := logicalArtifactCheck(cfg, path, d)
+		if err == nil {
+			cache.recordLocal(cfg, path, d, inventory)
+		}
+		return inventory, err
+	})
+}
+
+func verifyLogicalCaptureWith(cfg config, r runRecord, folder string, checkArtifact func(string, databaseResult) (map[string]map[string][]string, error)) error {
 	if r.Status != "success" || r.FailureReason != "" || r.DatabasesFailed != 0 || len(r.LogicalOmissions) > 0 || r.LogicalBackupScope != "" {
 		return fmt.Errorf("logical capture is %s, not complete", r.Status)
 	}
@@ -94,11 +118,7 @@ func verifyLogicalCapture(cfg config, r runRecord, folder string) error {
 			return fmt.Errorf("version 2 capture lacks required object inventory for database %s", d.Name)
 		}
 		if !verified[path] {
-			ok, err := validateLogicalArtifactForEngineWithEncryption(cfg.DBEngine, path, d.ArtifactSHA256, d.SQLSHA256, cfg.EncryptionKey)
-			if err != nil || !ok {
-				return fmt.Errorf("database %q artifact invalid: %v", d.Name, err)
-			}
-			parsed, e := artifactObjectInventory(path, d.Name, cfg.EncryptionKey)
+			parsed, e := checkArtifact(path, d)
 			if e != nil {
 				return e
 			}

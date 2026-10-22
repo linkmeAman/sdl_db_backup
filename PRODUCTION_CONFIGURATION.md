@@ -103,6 +103,8 @@ BACKUP_LOGICAL_CONSISTENCY=global
 BACKUP_ALLOW_OBJECT_OMISSIONS=false
 BACKUP_LOGICAL_PARALLEL=4
 BACKUP_LOGICAL_GZIP_LEVEL=4
+BACKUP_LOGICAL_COMPRESSOR=auto
+BACKUP_LOGICAL_COMPRESS_THREADS=4
 BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE=true
 MYSQLDUMP_BIN=/var/www/go-workspace/sdl/sdl_db_backup/remediation/tools/mysql84/usr/bin/mysqldump
 BACKUP_MYSQL_PITR_METADATA_ENABLED=false
@@ -114,6 +116,16 @@ and one `all-databases.sql.gz` file. Per-database results reference that shared
 file; configured parallelism does not create independent global snapshots.
 All required objects, gzip integrity, footer, sizes and hashes must verify.
 A subset cannot publish a complete marker.
+
+Because global mode is one stream, `BACKUP_LOGICAL_PARALLEL` does not speed it
+up; compression does. `BACKUP_LOGICAL_COMPRESSOR=auto` (the default) streams the
+dump through `pigz` with `BACKUP_LOGICAL_COMPRESS_THREADS` threads when pigz is
+installed, and otherwise uses the built-in single-threaded gzip. Both write
+standard gzip with identical SQL content; restore and validation are unchanged.
+On this host pigz with 4 threads compressed a 1.5 GB sample of the production
+dump in 6.3 s versus 17.7 s built in, with about 2.5% larger output. Set
+`gzip` to force the built-in compressor; an explicit `pigz` fails before
+dumping if the binary is missing.
 
 The source MySQL version observed was 8.0.46. The private MySQL 8.4.11 dump
 client supports `--init-command`; it sets `max_execution_time=0` for its session.
@@ -221,6 +233,7 @@ BACKUP_STORAGE_TEMPORARY_BYTES=268435456
 BACKUP_STORAGE_MIN_FREE_INODES=128
 BACKUP_STORAGE_TEMP_MAX_AGE=24h
 BACKUP_STORAGE_VERIFY_TIMEOUT=20m
+BACKUP_STORAGE_VERIFY_CACHE_TTL=24h
 BACKUP_STORAGE_SECONDARY_DIR=
 BACKUP_RETENTION_DELETE_ENABLED=false
 BACKUP_RETENTION_MIN_COMPLETE=2
@@ -229,6 +242,18 @@ BACKUP_RETENTION_DAILY=7
 BACKUP_RETENTION_WEEKLY=4
 BACKUP_RETENTION_MONTHLY=12
 ```
+
+`BACKUP_STORAGE_VERIFY_CACHE_TTL` (default `24h`, `0` disables) lets the
+pre-capture manager skip re-reading recovery points that were fully verified
+within that window and have not changed. Every full verification (after
+capture, before upload, during retention) still re-reads artifacts and records
+its result in `BACKUP_LOG_DIR/storage-verify-cache.json` (mode 0600, no key
+material). A local entry is reused only while size, mtime, ctime, inode, device,
+manifest hashes and the encryption key are unchanged; an S3 entry only while a
+HEAD shows the same ETag, size, version and Last-Modified, and the completion
+marker, manifest and listing are still checked live. Previously each run
+re-read about 2.3 minutes per local point plus a full S3 download of offsite
+points, roughly 12 of a 26-minute run.
 
 The automatic local manager runs before capture. The maximum of the most recent
 12 complete compressed captures receives a 50% growth allowance, 512 MiB for

@@ -497,6 +497,7 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 	addInt("Storage", "BACKUP_STORAGE_CONCURRENT_BYTES", "Concurrent Write Allowance", cfg.StorageConcurrentBytes, func(c *backupapp.Config, v int) { c.StorageConcurrentBytes = v })
 	addInt("Storage", "BACKUP_STORAGE_TEMPORARY_BYTES", "Temporary File Allowance", cfg.StorageTemporaryBytes, func(c *backupapp.Config, v int) { c.StorageTemporaryBytes = v })
 	addInt("Storage", "BACKUP_STORAGE_MIN_FREE_INODES", "Minimum Free Inodes", cfg.StorageMinFreeInodes, func(c *backupapp.Config, v int) { c.StorageMinFreeInodes = v })
+	addDuration("Storage", "BACKUP_STORAGE_VERIFY_CACHE_TTL", "Verified Backup Recheck Interval (0 disables)", cfg.StorageVerifyCacheTTL, func(c *backupapp.Config, v time.Duration) { c.StorageVerifyCacheTTL = v })
 	addString("Storage", "BACKUP_STORAGE_SECONDARY_DIR", "Approved Secondary Directory", cfg.StorageSecondaryDir, false, func(c *backupapp.Config, v string) { c.StorageSecondaryDir = v })
 	addBool("Reliability", "BACKUP_RETENTION_DELETE_ENABLED", "Authorize Retention Quarantine", cfg.RetentionDeleteEnabled, func(c *backupapp.Config, v bool) { c.RetentionDeleteEnabled = v })
 	addInt("Reliability", "BACKUP_RETENTION_MIN_COMPLETE", "Protected Complete Points", cfg.RetentionMinComplete, func(c *backupapp.Config, v int) { c.RetentionMinComplete = v })
@@ -529,6 +530,8 @@ func buildConfigFields(cfg backupapp.Config) []configField {
 	addInt("Logical", "BACKUP_SAMPLE_DATA_ROWS", "Sample Data Rows", cfg.SampleDataRows, func(c *backupapp.Config, v int) { c.SampleDataRows = max(1, v) })
 	addInt("Logical", "BACKUP_LOGICAL_PARALLEL", "Logical Parallel", cfg.LogicalParallel, func(c *backupapp.Config, v int) { c.LogicalParallel = v })
 	addInt("Logical", "BACKUP_LOGICAL_GZIP_LEVEL", "Logical Gzip Level", cfg.LogicalGzipLevel, func(c *backupapp.Config, v int) { c.LogicalGzipLevel = v })
+	addString("Logical", "BACKUP_LOGICAL_COMPRESSOR", "Logical Compressor (auto/pigz/gzip)", cfg.LogicalCompressor, false, func(c *backupapp.Config, v string) { c.LogicalCompressor = strings.ToLower(strings.TrimSpace(v)) })
+	addInt("Logical", "BACKUP_LOGICAL_COMPRESS_THREADS", "Logical Compress Threads", cfg.LogicalCompressThreads, func(c *backupapp.Config, v int) { c.LogicalCompressThreads = v })
 	addBool("Logical", "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", "Logical Upload", cfg.LogicalS3UploadEnabled, func(c *backupapp.Config, v bool) { c.LogicalS3UploadEnabled = v })
 
 	addBool("Physical", "BACKUP_PHYSICAL_ENABLED", "Physical Enabled", cfg.PhysicalEnabled, func(c *backupapp.Config, v bool) { c.PhysicalEnabled = v })

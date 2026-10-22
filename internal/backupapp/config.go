@@ -1,6 +1,7 @@
 package backupapp
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ type config struct {
 	StorageMinFreeInodes   int
 	StorageTempMaxAge      time.Duration
 	StorageVerifyTimeout   time.Duration
+	StorageVerifyCacheTTL  time.Duration
 	StorageSecondaryDir    string
 
 	RetentionDeleteEnabled          bool
@@ -65,6 +67,8 @@ type config struct {
 	SampleDataRows                  int
 	LogicalParallel                 int
 	LogicalGzipLevel                int
+	LogicalCompressor               string
+	LogicalCompressThreads          int
 	LogicalS3UploadEnabled          bool
 	RequireRemoteCompletion         bool
 	LogicalSchedule                 string
@@ -287,6 +291,23 @@ func getMapDuration(values map[string]string, key string, fallback time.Duration
 	return value
 }
 
+// getMapDurationAllowZero is getMapDuration where an explicit zero disables the
+// feature instead of selecting the fallback.
+func getMapDurationAllowZero(values map[string]string, key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(getMapValue(values, key, ""))
+	if raw == "" {
+		return fallback
+	}
+	if raw == "0" {
+		return 0
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
 func getMapBool(values map[string]string, key string, fallback bool) bool {
 	raw := strings.TrimSpace(getMapValue(values, key, ""))
 	if raw == "" {
@@ -340,6 +361,7 @@ func loadConfigFromValues(values map[string]string) config {
 		StorageMinFreeInodes:            getMapInt(values, "BACKUP_STORAGE_MIN_FREE_INODES", 128),
 		StorageTempMaxAge:               getMapDuration(values, "BACKUP_STORAGE_TEMP_MAX_AGE", 24*time.Hour),
 		StorageVerifyTimeout:            getMapDuration(values, "BACKUP_STORAGE_VERIFY_TIMEOUT", 20*time.Minute),
+		StorageVerifyCacheTTL:           getMapDurationAllowZero(values, "BACKUP_STORAGE_VERIFY_CACHE_TTL", 24*time.Hour),
 		StorageSecondaryDir:             getMapValue(values, "BACKUP_STORAGE_SECONDARY_DIR", ""),
 		RetentionDeleteEnabled:          getMapBool(values, "BACKUP_RETENTION_DELETE_ENABLED", false),
 		RetentionMinComplete:            max(1, getMapInt(values, "BACKUP_RETENTION_MIN_COMPLETE", 2)),
@@ -375,6 +397,8 @@ func loadConfigFromValues(values map[string]string) config {
 		SampleDataRows:                  max(1, getMapInt(values, "BACKUP_SAMPLE_DATA_ROWS", 50)),
 		LogicalParallel:                 getMapInt(values, "BACKUP_LOGICAL_PARALLEL", 2),
 		LogicalGzipLevel:                getMapInt(values, "BACKUP_LOGICAL_GZIP_LEVEL", 1),
+		LogicalCompressor:               strings.ToLower(getMapValue(values, "BACKUP_LOGICAL_COMPRESSOR", "auto")),
+		LogicalCompressThreads:          getMapInt(values, "BACKUP_LOGICAL_COMPRESS_THREADS", defaultLogicalCompressThreads),
 		LogicalS3UploadEnabled:          getMapBool(values, "BACKUP_LOGICAL_S3_UPLOAD_ENABLED", false),
 		RequireRemoteCompletion:         getMapBool(values, "BACKUP_REQUIRE_REMOTE_COMPLETION", true),
 		LogicalSchedule:                 getMapValue(values, "BACKUP_LOGICAL_SCHEDULE", "always"),
@@ -583,7 +607,7 @@ func ClearTemporaryOverrides(envPath string) error {
 }
 
 func managedEnvKeys() []string {
-	return []string{"BACKUP_LOCAL_MAX_BACKUPS", "BACKUP_STORAGE_AUTO_CLEANUP", "BACKUP_STORAGE_HIGH_WATERMARK", "BACKUP_STORAGE_LOW_WATERMARK", "BACKUP_STORAGE_GROWTH_PERCENT", "BACKUP_STORAGE_HISTORY_RUNS", "BACKUP_STORAGE_CONCURRENT_BYTES", "BACKUP_STORAGE_TEMPORARY_BYTES", "BACKUP_STORAGE_MIN_FREE_INODES", "BACKUP_STORAGE_TEMP_MAX_AGE", "BACKUP_STORAGE_VERIFY_TIMEOUT", "BACKUP_STORAGE_SECONDARY_DIR", "BACKUP_RETENTION_DELETE_ENABLED", "BACKUP_RETENTION_MIN_COMPLETE", "BACKUP_STORAGE_RESERVE_BYTES", "BACKUP_STORAGE_ESTIMATE_BYTES", "BACKUP_SYSTEMD_SCOPE", "BACKUP_LOGICAL_CONSISTENCY", "BACKUP_SCHEDULE_TIMEZONE", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE",
+	return []string{"BACKUP_LOCAL_MAX_BACKUPS", "BACKUP_STORAGE_AUTO_CLEANUP", "BACKUP_STORAGE_HIGH_WATERMARK", "BACKUP_STORAGE_LOW_WATERMARK", "BACKUP_STORAGE_GROWTH_PERCENT", "BACKUP_STORAGE_HISTORY_RUNS", "BACKUP_STORAGE_CONCURRENT_BYTES", "BACKUP_STORAGE_TEMPORARY_BYTES", "BACKUP_STORAGE_MIN_FREE_INODES", "BACKUP_STORAGE_TEMP_MAX_AGE", "BACKUP_STORAGE_VERIFY_TIMEOUT", "BACKUP_STORAGE_VERIFY_CACHE_TTL", "BACKUP_STORAGE_SECONDARY_DIR", "BACKUP_RETENTION_DELETE_ENABLED", "BACKUP_RETENTION_MIN_COMPLETE", "BACKUP_STORAGE_RESERVE_BYTES", "BACKUP_STORAGE_ESTIMATE_BYTES", "BACKUP_SYSTEMD_SCOPE", "BACKUP_LOGICAL_CONSISTENCY", "BACKUP_SCHEDULE_TIMEZONE", "BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE",
 		"DB_USER",
 		"DB_PASS",
 		"DB_ENGINE",
@@ -609,6 +633,8 @@ func managedEnvKeys() []string {
 		"BACKUP_LOGICAL_TIMEOUT_PER_DB",
 		"BACKUP_LOGICAL_PARALLEL",
 		"BACKUP_LOGICAL_GZIP_LEVEL",
+		"BACKUP_LOGICAL_COMPRESSOR",
+		"BACKUP_LOGICAL_COMPRESS_THREADS",
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED",
 		"BACKUP_REQUIRE_REMOTE_COMPLETION",
 		"BACKUP_PHYSICAL_ENABLED",
@@ -680,6 +706,7 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_STORAGE_MIN_FREE_INODES":            fmt.Sprint(cfg.StorageMinFreeInodes),
 		"BACKUP_STORAGE_TEMP_MAX_AGE":               cfg.StorageTempMaxAge.String(),
 		"BACKUP_STORAGE_VERIFY_TIMEOUT":             cfg.StorageVerifyTimeout.String(),
+		"BACKUP_STORAGE_VERIFY_CACHE_TTL":           cfg.StorageVerifyCacheTTL.String(),
 		"BACKUP_STORAGE_SECONDARY_DIR":              cfg.StorageSecondaryDir,
 		"BACKUP_RETENTION_DELETE_ENABLED":           fmt.Sprint(cfg.RetentionDeleteEnabled),
 		"BACKUP_RETENTION_MIN_COMPLETE":             fmt.Sprint(cfg.RetentionMinComplete),
@@ -714,6 +741,8 @@ func envMapFromConfig(cfg Config) map[string]string {
 		"BACKUP_LOGICAL_TIMEOUT_PER_DB":       cfg.LogicalTimeoutPerDB.String(),
 		"BACKUP_LOGICAL_PARALLEL":             strconv.Itoa(cfg.LogicalParallel),
 		"BACKUP_LOGICAL_GZIP_LEVEL":           strconv.Itoa(cfg.LogicalGzipLevel),
+		"BACKUP_LOGICAL_COMPRESSOR":           cmp.Or(cfg.LogicalCompressor, "auto"),
+		"BACKUP_LOGICAL_COMPRESS_THREADS":     strconv.Itoa(normalizedLogicalCompressThreads(cfg.LogicalCompressThreads)),
 		"BACKUP_LOGICAL_S3_UPLOAD_ENABLED":    strconv.FormatBool(cfg.LogicalS3UploadEnabled),
 		"BACKUP_REQUIRE_REMOTE_COMPLETION":    strconv.FormatBool(cfg.RequireRemoteCompletion),
 		"BACKUP_PHYSICAL_ENABLED":             strconv.FormatBool(cfg.PhysicalEnabled),
@@ -784,6 +813,12 @@ func quoteEnvValue(value string) string {
 }
 
 func SaveConfig(envPath string, cfg Config) error {
+	if cfg.StorageVerifyCacheTTL < 0 {
+		return fmt.Errorf("BACKUP_STORAGE_VERIFY_CACHE_TTL must be zero (disabled) or positive")
+	}
+	if err := logicalCompressionPolicy(cfg); err != nil {
+		return err
+	}
 	if cfg.StorageAutoCleanup {
 		if err := storagePolicy(cfg); err != nil {
 			return err
