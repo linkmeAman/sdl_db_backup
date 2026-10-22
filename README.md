@@ -71,7 +71,7 @@ terminal UI, REST API, health checks, validation tools, and Prometheus metrics.
 - Go 1.24.2 or newer to build from source.
 - For MySQL logical backups: `mysql` and `mysqldump`. With the default
   `BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE=true`, the dump client must support
-  `--init-command` (the deployed MySQL 8.4.11 client does). The override sets only
+  `--init-command` (MySQL 8.4 clients do). The override sets only
   its session timeout; it never changes the production global timeout.
 - For PostgreSQL logical backups: `pg_dump`; `psql` is also required for
   sandbox restore testing.
@@ -453,7 +453,7 @@ The manifest, health CLI, TUI and metrics expose capacity, decisions, reclaimed
 space, protected points and the forecast without further cleanup. Deletion audits
 are under `BACKUP_LOG_DIR/storage-deletions/`; latest health is in
 `BACKUP_LOG_DIR/storage-status.json`. See
-[production storage evidence and rollback](remediation/STORAGE_RECOVERY.md).
+[production configuration](PRODUCTION_CONFIGURATION.md#storage-and-retention).
 
 ### Limit local backups by count
 
@@ -466,9 +466,12 @@ can block cleanup and a new capture when the limit cannot be met safely.
 
 Preview with `./sdl-db-backup storage-plan`; enforce the configured policy
 without starting a capture with `./sdl-db-backup storage-cleanup`.
+After the last eligible payload in a run is deleted, cleanup removes its known
+metadata and timestamp folder too. Metadata-only leftovers are also swept;
+central deletion journals and offsite manifests retain the audit history.
+Folders with active backups, pins, recovery dependencies or unknown files are held.
 
-Production backup logs, history, schedule state, shared lock and deletion audits
-are consolidated at `/srv/backup/logs/sdl-db-backup`; historical
-one-off and smoke-test logs are under its private `diagnostics/` subdirectory.
-See [production configuration](PRODUCTION_CONFIGURATION.md) for compatibility
-links and verification evidence.
+Keep backup logs, history, schedule state, shared lock and deletion audits
+together in one directory such as `/srv/backup/logs/sdl-db-backup`.
+See [production configuration](PRODUCTION_CONFIGURATION.md#consolidated-backup-logs)
+for compatibility links when moving it.

@@ -354,6 +354,12 @@ Shows:
 
 ### Step 5: Run
 
+Manual and scheduled backups share one lock. If another backup is running,
+the TUI returns to Preview with a busy message and keeps your selections.
+Wait for that run to finish, then select `Start backup` again. `Force run now`
+bypasses the schedule only; it does not bypass the lock. A busy attempt does
+not create a failed backup record or replace the active run's metrics.
+
 Shows:
 - spinner.
 - progress summary.
@@ -723,8 +729,8 @@ Main viewport composition:
 
 ## Production reliability settings
 
-See [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md) for the current
-six-database global capture, system scope, Europe/Berlin schedule, capacity
+See [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md) for a reference
+production profile: global capture, system scope, schedule timezone, capacity
 reserve, and retention hold. Saving settings alone does not apply the timer.
 Health distinguishes latest complete/partial captures and verified remote
 copies from unverified recovery availability. Global bundles cannot use the
@@ -743,4 +749,4 @@ protected local/S3 point counts, forecast without further cleanup, fallback and
 failure details. Operational scheduler state and latest complete/partial runs
 retain their existing displays. Cached protection is observational; every actual
 deletion revalidates recovery coverage. Restore state remains separate and
-restore testing stays disabled in the deployed profile.
+restore testing is disabled unless explicitly enabled.

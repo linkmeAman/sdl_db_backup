@@ -4,8 +4,8 @@
 
 - Capture all required MySQL databases in one transaction when `global` mode
   is selected; require InnoDB, a backup lock and complete object inventories.
-- Introduce version 2 run states and fail-closed artifact verification. Five
-  of six databases cannot publish `COMPLETED.json`.
+- Introduce version 2 run states and fail-closed artifact verification. A capture
+  missing any required database cannot publish `COMPLETED.json`.
 - Verify every S3 payload and paginated physical chunk inventory; use bounded
   transient retries and persist multipart ownership journals.
 - Freeze committed manifests and preserve later execution bookkeeping separately.
@@ -15,10 +15,9 @@
   and explicitly apply calendars with validation and rollback.
 - Preserve settings-file ownership during atomic replacement and expose live
   capacity metrics through the existing monitoring integration.
-- The approved missing-view-definer correction restored capture of all six
-  databases. The automatic 18:00 run and its full local/S3 hashes were verified.
-  Restore testing remains disabled; recovery readiness is not claimed.
-- Current production settings: [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md).
+- Views with a missing definer must be repaired before global capture.
+  Capture integrity is not a claim of recovery readiness.
+- Reference production settings: [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md).
 
 ## Earlier implementation
 

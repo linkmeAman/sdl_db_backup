@@ -46,3 +46,15 @@ remediation/storage-rollback/
 # Consolidated log compatibility links and private migration rollback state.
 remediation/oneoff-logs
 remediation/log-path-migration
+
+# Deployment records and evidence stay on the host, outside the repository.
+remediation/
+
+# Build outputs; build locally (see install.sh).
+/main
+/main_sync_upload
+/scripts/tui
+/sdl-db-backup
+/sdl-db-backup-health
+/sdl-db-backup-tui
+/sdl-db-backup-api

@@ -4,12 +4,10 @@ This runbook defines the operational controls that must accompany the backup
 application. Do not treat a successful backup process as a disaster-recovery
 guarantee until these controls are configured and rehearsed.
 
-## Current production scope
+## Production scope
 
-As of October 12, 2026, all six databases have passed shared-transaction capture
-and independent local/S3 integrity verification. Restore testing is disabled
-by operator instruction; no restore was run. Recovery readiness and RTO remain
-unverified. Current settings and evidence are in
+Capture and local/S3 integrity verification do not prove recovery readiness or
+RTO; those require a restore. Reference production settings are in
 [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md). The procedures below
 require a separately authorized, isolated recovery exercise. The existing
 per-database restore tool rejects global `all-databases.sql.gz` bundles.

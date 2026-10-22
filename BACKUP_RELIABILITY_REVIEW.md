@@ -1,10 +1,9 @@
 # Backup Reliability Review
 
 > Historical review: findings below describe the earlier implementation.
-> October 12 fixes and remaining limitations are documented in
-> [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md) and
-> [remediation/README.md](remediation/README.md). This review is not the current
-> deployment verdict.
+> Later fixes are recorded in [CHANGES.md](CHANGES.md), and reference settings
+> in [PRODUCTION_CONFIGURATION.md](PRODUCTION_CONFIGURATION.md). This review is
+> not a current deployment verdict.
 
 **Review date:** 2026-09-03
 **Scope:** Backup creation, encryption, S3 upload, physical backup, recovery, retention, and verification paths in this repository.

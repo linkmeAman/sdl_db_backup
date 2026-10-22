@@ -79,10 +79,9 @@ the unrendered template directly.
 The renderer also sets the timestamp parser location from the host timezone,
 with an optional `BACKUP_LOG_TIMEZONE` override. Match the timezone used by the
 backup runner; otherwise local timestamps can be rejected as future entries.
-For an existing installation, `remediation/apply_promtail_log_timezone.py`
-previews a change to only the backup timestamp stage. Run it with explicit
-`--config` paths and add `--apply` under sudo to validate, save rollback copies,
-and restart Promtail. Existing scrape paths and saved positions are preserved.
+For an existing installation, change only the backup timestamp stage's
+`location`, keep a rollback copy of the configuration, and restart Promtail.
+Existing scrape paths and saved positions are preserved.
 
 If Loki is not on the same host, edit the datasource URL in
 `/etc/grafana/provisioning/datasources/sdl-db-backup-loki-datasource.yml`
@@ -133,8 +132,8 @@ Typical lines include:
 
 If you keep the dashboard time range around the active run and use ascending sort, Grafana shows the run from the beginning instead of dropping you into the latest lines first.
 
-Production logs are physically consolidated at
-`/srv/backup/logs/sdl-db-backup`. The deployed collector and its saved
-positions retain the old `/srv/backup/mysql_backup/logs` path through
-a compatibility symlink. Both paths identify the same files; preserve that alias
-unless migrating the collector configuration and position keys together.
+If logs are moved to a consolidated directory such as
+`/srv/backup/logs/sdl-db-backup`, an existing collector and its saved positions
+can keep reading the old path through a compatibility symlink. Both paths then
+identify the same files; preserve that alias unless migrating the collector
+configuration and position keys together.

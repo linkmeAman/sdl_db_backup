@@ -207,10 +207,13 @@ Only regular single-link eligible payloads under validated timestamp run
 folders can be unlinked through anchored directory descriptors. Deletion
 requires independently verified local protection and at least two complete
 verified S3 points; each candidate's S3 counterpart and file identity are
-rechecked immediately before deletion. Metadata survives local payload eviction
-and `local-storage-state.json` records it. Each operation has an fsynced INTENT
-and final outcome audit under `BACKUP_LOG_DIR/storage-deletions`. Interrupted
-operations re-establish current eligibility; replacement files are held.
+rechecked immediately before deletion. After the last eligible payload is
+removed, known per-run metadata and its timestamp directory are removed too.
+Metadata-only leftovers are swept on subsequent cleanup and capture invocations.
+Pins, recovery dependencies, active runs and unknown or linked files are held.
+Central fsynced journals under `BACKUP_LOG_DIR/storage-deletions` retain payload
+deletion outcomes and metadata hashes. Interrupted metadata removal resumes only
+against the same inspected directory and files. Offsite manifests are preserved.
 
 `storage-plan` uses the same protection checks and returns JSON without deleting
 artifacts. It updates only the operational status cache. A cached status never
