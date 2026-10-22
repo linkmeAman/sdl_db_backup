@@ -143,3 +143,37 @@ func TestGuardRepeatedPreflightOutcomeAndCorruptionDetection(t *testing.T) {
 		t.Fatal("corrupted protected point still verifies")
 	}
 }
+
+// The integration image's mysqldump lacks --init-command, so the session-only
+// max_execution_time override is covered here instead.
+func TestMySQLDumpSessionTimeoutOverride(t *testing.T) {
+	for _, supported := range []bool{true, false} {
+		t.Run(fmt.Sprint(supported), func(t *testing.T) {
+			root := t.TempDir()
+			argsFile := filepath.Join(root, "args")
+			help := "--add-drop-table"
+			if supported {
+				help += "\n  --init-command=name"
+			}
+			bin := filepath.Join(root, "mysqldump")
+			script := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = --help ]; then printf '%%s\\n' '%s'; exit 0; fi\necho \"$@\" > '%s'\necho 'CREATE TABLE t (id int);'\necho '-- Dump completed on fixture'\n", help, argsFile)
+			os.WriteFile(bin, []byte(script), 0o700)
+			out := filepath.Join(root, "d.sql.gz")
+			cfg := config{DBEngine: "mysql", MySQLDumpBin: bin, LogicalTimeoutPerDB: time.Minute, PreflightTimeout: 10 * time.Second, MySQLDumpSessionTimeoutOverride: true}
+			_, err := dumpDatabase(cfg, "d", out, nil, nil)
+			if !supported {
+				if err == nil || !strings.Contains(err.Error(), "--init-command") || fileExists(argsFile) {
+					t.Fatalf("dumper without --init-command must be refused before dumping: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := os.ReadFile(argsFile)
+			if !strings.Contains(string(raw), "--init-command=SET SESSION max_execution_time=0") {
+				t.Fatalf("session override not passed: %s", raw)
+			}
+		})
+	}
+}

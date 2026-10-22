@@ -3,8 +3,11 @@ package backupapp
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -63,5 +66,29 @@ func TestAuthenticatedEncryptionDetectsTampering(t *testing.T) {
 func TestEncryptionRejectsInvalidKey(t *testing.T) {
 	if _, err := EncryptWriter(io.Discard, "too-short"); err == nil {
 		t.Fatal("expected invalid key to be rejected")
+	}
+}
+
+// The recorded artifact size must match the bytes on disk, which for encrypted
+// artifacts include the encryption framing; verification compares the two.
+func TestEncryptedDumpRecordsOnDiskSize(t *testing.T) {
+	root := t.TempDir()
+	for _, key := range []string{"", testEncryptionKey} {
+		out := filepath.Join(root, "d.sql.gz")
+		if key != "" {
+			out += ".enc"
+		}
+		cfg := config{DBEngine: "mysql", MySQLDumpBin: fakeMySQLDump(t, root, 1<<20), LogicalTimeoutPerDB: time.Minute, EncryptionKey: key}
+		outcome, err := dumpDatabase(cfg, "d", out, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.sizeBytes != info.Size() {
+			t.Fatalf("encrypted=%v recorded size %d, file has %d bytes", key != "", outcome.sizeBytes, info.Size())
+		}
 	}
 }

@@ -886,7 +886,10 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		}
 	}
 
-	var baseWriter io.Writer = &reserveWriter{file: file, reserve: uint64(max(0, cfg.StorageReserveBytes))}
+	// Count the bytes that reach the file (after any encryption): the recorded
+	// size is later compared with the artifact's on-disk and S3 sizes.
+	counter := &countingWriter{writer: &reserveWriter{file: file, reserve: uint64(max(0, cfg.StorageReserveBytes))}}
+	var baseWriter io.Writer = counter
 	var encryptionCloser io.Closer
 	if cfg.EncryptionKey != "" {
 		encWriter, encErr := EncryptWriter(baseWriter, cfg.EncryptionKey)
@@ -898,8 +901,6 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		baseWriter = encWriter
 		encryptionCloser = encWriter
 	}
-
-	counter := &countingWriter{writer: baseWriter}
 	compressor, pigzPath, err := resolveLogicalCompressor(cfg)
 	if err != nil {
 		closeFile()
@@ -961,9 +962,9 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 			_ = cmd.Process.Kill()
 			_ = stdout.Close()
 		}
-		streamErr = compressWithPigz(ctx, pigzPath, level, threads, counter, copySource, abortDump)
+		streamErr = compressWithPigz(ctx, pigzPath, level, threads, baseWriter, copySource, abortDump)
 	} else {
-		streamErr = compressWithGzip(level, counter, copySource)
+		streamErr = compressWithGzip(level, baseWriter, copySource)
 	}
 	if streamErr != nil {
 		_ = cmd.Process.Kill()

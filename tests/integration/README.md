@@ -9,10 +9,11 @@ From the repository root:
 Requires Docker Engine/Desktop with the Compose v2 plugin and a running daemon.
 The first run needs network access to pull images, Go modules, and Ubuntu client
 packages. No host Go, database clients, Python, or cloud credentials are needed.
-Allow roughly 4 GB of Docker memory for four database servers and MinIO.
+Allow roughly 4 GB of Docker memory for four database servers and the S3 server.
 
 The runner builds the actual backup and validation CLIs from the current checkout.
-It uses MySQL 8.0, PostgreSQL 16, and a versioned MinIO image. MySQL and PostgreSQL
+It uses MySQL 8.0, PostgreSQL 16, and a pinned versitygw S3 gateway image
+(MinIO no longer publishes community container images). MySQL and PostgreSQL
 each have separate source and restore servers. There are no published host ports,
 host database mounts, or inherited `.env` files. All credentials and the encryption
 key are public, disposable fixture values. A Dockerfile-specific ignore file keeps
@@ -25,10 +26,10 @@ The suite verifies for **both engines**:
 - Manifest metadata, exact table row counts, sampled content hashes, encrypted
   format, artifact SHA-256, and decrypted/decompressed SQL SHA-256.
 - CLI rejection of a wrong key, truncated ciphertext, and modified ciphertext.
-- MinIO object bytes, sizes, and SHA-256 values against `COMPLETED.json`, including
+- S3 object bytes, sizes, and SHA-256 values against `COMPLETED.json`, including
   the remote manifest. A forwarding proxy observes real signed S3 requests and
   asserts every artifact is uploaded and HEAD-verified before the marker PUT.
-- Recovery using the encrypted object downloaded from MinIO. The application's
+- Recovery using the encrypted object downloaded from S3. The application's
   sandbox validator imports it into a temporary database on the restore server
   and verifies schema, exact counts, and sampled content. The suite checks the
   persisted successful validation and temporary database cleanup.
@@ -52,13 +53,13 @@ Compose logs, encrypted artifacts, manifests, run histories, metrics, and observ
 S3 requests. Set `INTEGRATION_RESULTS_DIR=/absolute/path` to choose another output
 directory; use a fresh directory to avoid mixing diagnostics from multiple runs.
 `compose.log` contains the Python unittest summary. Commands have bounded timeouts,
-service health checks gate startup, and the suite polls MinIO readiness for up to
+service health checks gate startup, and the suite polls S3 readiness for up to
 90 seconds. CI runs this same command in a separate 20-minute job and retains
 results for seven days, including on failure.
 
 ## S3-compatible endpoints
 
-`BACKUP_S3_ENDPOINT=http://minio:9000` selects a custom direct S3 endpoint. Custom
+`BACKUP_S3_ENDPOINT=http://s3:9000` selects a custom direct S3 endpoint. Custom
 endpoints use path-style bucket addressing (`/<bucket>/<key>`), with the same
 Signature V4 authentication and completion checks as AWS. A base path is allowed;
 credentials, queries, and fragments in endpoint URLs are rejected. Omit this

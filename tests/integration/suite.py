@@ -1,4 +1,4 @@
-"""Exercise the shipped CLIs with real database clients and signed MinIO traffic."""
+"""Exercise the shipped CLIs with real database clients and signed S3 traffic."""
 import gzip
 import hashlib
 import http.client
@@ -34,7 +34,7 @@ class S3Proxy(BaseHTTPRequestHandler):
         if self.fail_manifest and self.command == 'PUT' and self.path.endswith('/manifest.json'):
             status, headers, data = 503, {}, b'injected upload failure'
         else:
-            connection = http.client.HTTPConnection('minio', 9000, timeout=30)
+            connection = http.client.HTTPConnection('s3', 9000, timeout=30)
             try:
                 connection.request(self.command, self.path, body, dict(self.headers))
                 response = connection.getresponse()
@@ -109,6 +109,9 @@ def environment(engine, case):
         'BACKUP_ALLOW_ROOT_RUNNER': 'true', 'BACKUP_LOGICAL_ENABLED': 'true',
         'BACKUP_LOGICAL_SCHEDULE': 'always', 'BACKUP_PHYSICAL_ENABLED': 'false',
         'BACKUP_LOGICAL_PARALLEL': '1', 'BACKUP_RETRY_COUNT': '1',
+        # Ubuntu's MySQL 8.0 mysqldump lacks --init-command (production uses an 8.4
+        # client); the session max_execution_time override is unit tested instead.
+        'BACKUP_MYSQLDUMP_SESSION_TIMEOUT_OVERRIDE': 'false',
         'BACKUP_LOGICAL_DATABASES': DATABASE,
         'BACKUP_LOGICAL_TIMEOUT_PER_DB': '60s', 'BACKUP_PREFLIGHT_TIMEOUT': '30s',
         'BACKUP_EXACT_ROW_COUNTS': 'true', 'BACKUP_SAMPLE_DATA_CHECKS': 'true',
@@ -133,7 +136,7 @@ class Integration(unittest.TestCase):
     def setUpClass(cls):
         RESULTS.mkdir(parents=True, exist_ok=True)
         Path('/suite/empty.env').touch()
-        cls.s3 = boto3.client('s3', endpoint_url='http://minio:9000',
+        cls.s3 = boto3.client('s3', endpoint_url='http://s3:9000',
                              aws_access_key_id='integration-access',
                              aws_secret_access_key='integration-secret-password',
                              region_name='us-east-1',
@@ -216,10 +219,11 @@ class Integration(unittest.TestCase):
         self.assertFalse(list(folder.glob('*.sql')))
         self.assertFalse(list(folder.glob('*.sql.gz')))
 
-        # Read and independently hash every object committed by MinIO.
+        # Read and independently hash every object committed by the S3 server.
         prefix = f"{env['BACKUP_S3_LOGICAL_PREFIX']}/{run['run_id']}"
         marker = json.loads(self.get_object(prefix + '/COMPLETED.json'))
-        self.assertEqual(marker['format_version'], 1)
+        self.assertEqual(marker['format_version'], 2)
+        self.assertEqual(marker['status'], 'COMPLETE')
         self.assertEqual(marker['run_id'], run['run_id'])
         self.assertEqual(marker['bucket'], BUCKET)
         self.assertEqual(marker['prefix'], prefix)
@@ -291,7 +295,7 @@ class Integration(unittest.TestCase):
         self.assertEqual(database_names(engine, 'source'), source_names)
         self.assertEqual(sql(engine, 'source', 'SELECT * FROM customers ORDER BY id', DATABASE), source_rows)
 
-        # Fail manifest upload after the encrypted artifact reached MinIO.
+        # Fail manifest upload after the encrypted artifact reached S3.
         failed_env = environment(engine, 'failed-upload')
         S3Proxy.events.clear()
         S3Proxy.fail_manifest = True
@@ -307,7 +311,9 @@ class Integration(unittest.TestCase):
         self.assertIn(failed_prefix + artifact.name, keys)
         self.assertNotIn(failed_prefix + 'COMPLETED.json', keys)
         self.assertTrue(any(status == 503 for _, _, status in S3Proxy.events))
-        self.assertFalse(any(path.endswith('/COMPLETED.json') for _, path, _ in S3Proxy.events))
+        # The pre-upload immutability check HEADs COMPLETED.json (404); it must never be written.
+        self.assertFalse(any(method == 'PUT' and path.endswith('/COMPLETED.json')
+                             for method, path, _ in S3Proxy.events))
         (RESULTS / engine / 'failed-upload' / 's3-events.json').write_text(json.dumps(S3Proxy.events, indent=2))
 
 
