@@ -203,6 +203,9 @@ control. The groups below cover the settings operators normally change.
 | `BACKUP_LOGICAL_TIMEOUT_PER_DB` | Per-database dump timeout. |
 | `BACKUP_LOGICAL_PARALLEL` | Maximum concurrent database dumps. Start at `1`–`2`. |
 | `BACKUP_LOGICAL_GZIP_LEVEL` | Compression level: `1` fastest, `9` smallest, `0` uncompressed stream. |
+| `BACKUP_LOGICAL_COMPRESSOR` | `auto` (default: pigz when installed, else built-in gzip), `pigz`, or `gzip`. Output is standard gzip either way. |
+| `BACKUP_LOGICAL_COMPRESS_THREADS` | pigz threads, `1`–`64` (default `4`). |
+| `BACKUP_STORAGE_VERIFY_CACHE_TTL` | How long a fully verified, unchanged recovery point is trusted by the pre-capture storage manager (default `24h`, `0` disables). |
 | `BACKUP_ALLOW_OBJECT_OMISSIONS` | Allows intentional omissions. Defaults to `false`; scoped/omission-based output is recorded as partial rather than full success. |
 | `BACKUP_MYSQL_PITR_METADATA_ENABLED` | Adds MySQL dump coordinates and server observation metadata. Requires independently retained binlogs. |
 | `BACKUP_EXACT_ROW_COUNTS` | Captures exact source row counts for stronger but slower sandbox verification. |

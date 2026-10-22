@@ -70,7 +70,7 @@ type storageManager struct {
 }
 
 var storageManagerFactory = func(cfg config) *storageManager {
-	return &storageManager{cfg: cfg, capacity: preflightCapacity, local: verifyLogicalCapture, remote: verifyStorageRemote, remoteLogical: verifyStorageRemoteLogical, identity: checkStorageRemoteIdentity, remove: unlinkStoragePayload, now: time.Now}
+	return &storageManager{cfg: cfg, capacity: preflightCapacity, local: verifyLogicalCaptureCached, remote: verifyStorageRemote, remoteLogical: verifyStorageRemoteLogical, identity: checkStorageRemoteIdentity, remove: unlinkStoragePayload, now: time.Now}
 }
 
 func isStoragePayload(name string) bool {

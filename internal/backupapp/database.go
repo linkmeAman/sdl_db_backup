@@ -900,11 +900,18 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 	}
 
 	counter := &countingWriter{writer: baseWriter}
-	gz, err := gzip.NewWriterLevel(counter, normalizedLogicalGzipLevel(cfg.LogicalGzipLevel))
+	compressor, pigzPath, err := resolveLogicalCompressor(cfg)
 	if err != nil {
 		closeFile()
 		removePartialOutput(outFile)
-		return dumpDatabaseOutcome{}, fmt.Errorf("setup gzip writer: %w", err)
+		return dumpDatabaseOutcome{}, err
+	}
+	level := normalizedLogicalGzipLevel(cfg.LogicalGzipLevel)
+	threads := normalizedLogicalCompressThreads(cfg.LogicalCompressThreads)
+	if compressor == "pigz" {
+		log.Printf("logical compression: pigz threads=%d level=%d", threads, level)
+	} else {
+		log.Printf("logical compression: built-in gzip level=%d", level)
 	}
 
 	var cmd *exec.Cmd
@@ -929,6 +936,7 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 		}
 		cmd = dbCmdContext(ctx, cfg, cfg.MySQLDumpBin, args...)
 	}
+	cmd.WaitDelay = dumpPipeWaitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		closeFile()
@@ -947,21 +955,22 @@ func dumpDatabase(cfg config, dbName, outFile string, tables []string, ignoreTab
 	coordinateExtractor := newMySQLSourceDataExtractor()
 	copySource := io.TeeReader(stdout, coordinateExtractor)
 
-	if _, err := io.Copy(gz, copySource); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		_ = gz.Close()
-		closeFile()
-		removePartialOutput(outFile)
-		return dumpDatabaseOutcome{}, fmt.Errorf("stream mysqldump output: %w", err)
+	var streamErr error
+	if compressor == "pigz" {
+		abortDump := func() {
+			_ = cmd.Process.Kill()
+			_ = stdout.Close()
+		}
+		streamErr = compressWithPigz(ctx, pigzPath, level, threads, counter, copySource, abortDump)
+	} else {
+		streamErr = compressWithGzip(level, counter, copySource)
 	}
-
-	if err := gz.Close(); err != nil {
+	if streamErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		closeFile()
 		removePartialOutput(outFile)
-		return dumpDatabaseOutcome{}, fmt.Errorf("finalize gzip: %w", err)
+		return dumpDatabaseOutcome{}, streamErr
 	}
 	if encryptionCloser != nil {
 		if err := encryptionCloser.Close(); err != nil {

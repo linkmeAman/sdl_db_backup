@@ -174,10 +174,18 @@ func verifyStorageRemoteCapture(ctx context.Context, cfg config, id string, allo
 	for _, object := range listing.Objects {
 		sizes[strings.TrimPrefix(object.Key, prefix+"/")] = object.SizeBytes
 	}
+	cache := openStorageVerifyCache(cfg)
+	defer cache.save()
 	for name, sqlHash := range required {
 		a := objects[name]
 		if sizes[name] != a.SizeBytes {
 			return proof, fmt.Errorf("remote inventory size mismatch")
+		}
+		if name != "manifest.json" {
+			if cached, ok := cache.lookupRemote(ctx, cfg, prefix+"/"+name, a, sqlHash, meta.SHA256); ok {
+				proof.Objects = append(proof.Objects, cached)
+				continue
+			}
 		}
 		var observed StorageRemoteObject
 		err = withS3Retry(ctx, func() error {
@@ -241,6 +249,9 @@ func verifyStorageRemoteCapture(ctx context.Context, cfg config, id string, allo
 		})
 		if err != nil {
 			return proof, err
+		}
+		if name != "manifest.json" {
+			cache.recordRemote(cfg, observed, sqlHash, meta.SHA256)
 		}
 		proof.Objects = append(proof.Objects, observed)
 	}
