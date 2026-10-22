@@ -410,7 +410,7 @@ cleanup, validation, adaptive parallelism, and physical retry state.
 ## Integration tests
 
 Run `./tests/integration/run.sh` with Docker and Compose v2 to test MySQL,
-PostgreSQL, encryption, MinIO completion markers, and isolated restores. See the
+PostgreSQL, encryption, S3 completion markers, and isolated restores. See the
 [integration test guide](tests/integration/README.md) for coverage and diagnostics.
 
 ## Automatic local storage recovery
