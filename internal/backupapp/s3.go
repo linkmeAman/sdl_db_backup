@@ -237,7 +237,11 @@ func uploadBackupDirectToS3(cfg config, runFolder string) error {
 	markLogicalUploadSuccess(&capture)
 	capture.Duration = time.Since(capture.Timestamp).Round(time.Millisecond).String()
 	setManifestMetadata(cfg, &capture)
-	if err := writeManifest(runFolder, capture); err != nil {
+	if _, statErr := os.Stat(filepath.Join(runFolder, "manifest-commit.json")); statErr == nil {
+		if err := verifyCommittedManifest(runFolder); err != nil {
+			return err
+		}
+	} else if err := writeManifest(runFolder, capture); err != nil {
 		return err
 	}
 	manifestPath := filepath.Join(runFolder, "manifest.json")

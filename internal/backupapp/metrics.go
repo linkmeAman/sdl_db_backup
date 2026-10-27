@@ -46,6 +46,9 @@ type backupMetricsSnapshot struct {
 	StorageReclaimed            uint64
 	StorageProtectedLocal       int
 	StorageProtectedRemote      int
+	StorageLocalPayloadRuns     int
+	StorageLocalMaxBackups      int
+	StorageLocalWithoutOffsite  int
 	StorageManagerCritical      int
 	StorageAutoEnabled          int
 	CapacityAvailable           uint64
@@ -315,6 +318,22 @@ func readExistingBackupMetricsSnapshot(path string) backupMetricsSnapshot {
 		}
 		value := fields[len(fields)-1]
 		switch name {
+		case "backup_storage_reclaimed_bytes":
+			snapshot.StorageReclaimed, _ = strconv.ParseUint(value, 10, 64)
+		case "backup_storage_protected_local_points":
+			snapshot.StorageProtectedLocal, _ = strconv.Atoi(value)
+		case "backup_storage_protected_remote_points":
+			snapshot.StorageProtectedRemote, _ = strconv.Atoi(value)
+		case "backup_storage_local_payload_runs":
+			snapshot.StorageLocalPayloadRuns, _ = strconv.Atoi(value)
+		case "backup_storage_local_max_backups":
+			snapshot.StorageLocalMaxBackups, _ = strconv.Atoi(value)
+		case "backup_storage_local_without_offsite_runs":
+			snapshot.StorageLocalWithoutOffsite, _ = strconv.Atoi(value)
+		case "backup_storage_manager_critical":
+			snapshot.StorageManagerCritical, _ = strconv.Atoi(value)
+		case "backup_storage_auto_cleanup_enabled":
+			snapshot.StorageAutoEnabled, _ = strconv.Atoi(value)
 		case "backup_last_run_timestamp":
 			snapshot.RunTimestamp, _ = strconv.ParseInt(value, 10, 64)
 		case "backup_storage_available_bytes":
@@ -427,6 +446,9 @@ func writeBackupMetricsFile(path string, snapshot backupMetricsSnapshot, labels 
 		{Name: "backup_storage_reclaimed_bytes", Help: "Bytes actually reclaimed by the latest storage operation.", Value: strconv.FormatUint(snapshot.StorageReclaimed, 10)},
 		{Name: "backup_storage_protected_local_points", Help: "Local capture points protected by the storage policy.", Value: strconv.Itoa(snapshot.StorageProtectedLocal)},
 		{Name: "backup_storage_protected_remote_points", Help: "Independently verified offsite points protected during the last full storage inspection.", Value: strconv.Itoa(snapshot.StorageProtectedRemote)},
+		{Name: "backup_storage_local_payload_runs", Help: "Local logical dump runs currently kept on the capture volume.", Value: strconv.Itoa(snapshot.StorageLocalPayloadRuns)},
+		{Name: "backup_storage_local_max_backups", Help: "Configured local logical dump count limit; zero when disabled.", Value: strconv.Itoa(snapshot.StorageLocalMaxBackups)},
+		{Name: "backup_storage_local_without_offsite_runs", Help: "Local logical dump runs with no verified complete offsite point. Held, not deleted.", Value: strconv.Itoa(snapshot.StorageLocalWithoutOffsite)},
 		{Name: "backup_storage_manager_critical", Help: "Storage recovery failed without sufficient safe capture headroom.", Value: strconv.Itoa(snapshot.StorageManagerCritical)},
 		{Name: "backup_storage_auto_cleanup_enabled", Help: "Authorized automatic local payload cleanup is enabled.", Value: strconv.Itoa(snapshot.StorageAutoEnabled)},
 		{Name: "backup_storage_available_bytes", Help: "Available capture volume capacity.", Value: strconv.FormatUint(snapshot.CapacityAvailable, 10)},
@@ -822,6 +844,9 @@ func applyStorageManagerMetrics(cfg config, snapshot *backupMetricsSnapshot, rep
 	snapshot.StorageReclaimed = report.ReclaimedBytes
 	snapshot.StorageProtectedLocal = len(report.ProtectedLocal)
 	snapshot.StorageProtectedRemote = len(report.ProtectedRemote)
+	snapshot.StorageLocalPayloadRuns = report.LocalBackupCount
+	snapshot.StorageLocalMaxBackups = cfg.StorageMaxLocalBackups
+	snapshot.StorageLocalWithoutOffsite = len(report.LocalWithoutOffsite)
 	snapshot.StorageManagerCritical = 0
 	if report.State == "CRITICAL" {
 		snapshot.StorageManagerCritical = 1

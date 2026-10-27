@@ -1136,6 +1136,14 @@ latest operation; concurrent writers can make this differ from payload size.
 inspection. Cached counts outside cleanup are observational; deletion always
 requires fresh independent integrity checks.
 
+`backup_storage_local_payload_runs` counts local logical dump runs kept on the
+capture volume, and `backup_storage_local_max_backups` is the configured limit
+(zero when disabled). `backup_storage_local_without_offsite_runs` counts local
+retained logical runs without a complete S3 marker. Runs outside the explicit
+local count window may expire after newer local and offsite recovery points
+have been verified; deleted runs no longer contribute to this metric. The `SDLDBLocalRunWithoutOffsiteCopy` and
+`SDLDBLocalBackupCountOverLimit` rules watch these values.
+
 `backup_storage_manager_critical` is 1 when storage recovery fails to provide
 safe headroom. The `SDLBackupStorageRecoveryCritical` rule uses critical
 severity. Deploy/reload the rule through the existing Prometheus/Alertmanager

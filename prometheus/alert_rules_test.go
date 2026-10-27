@@ -29,6 +29,8 @@ func TestAlertRulesFileExistsAndLooksStructured(t *testing.T) {
 		"alert: SDLDBBackupStuckRunning",
 		"alert: SDLDBBackupMetricsStaleDuringRun",
 		"alert: SDLDBNoSuccessfulBackupRecently",
+		"alert: SDLDBLocalRunWithoutOffsiteCopy",
+		"alert: SDLDBLocalBackupCountOverLimit",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected alert rule file to contain %q", want)

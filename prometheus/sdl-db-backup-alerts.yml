@@ -129,3 +129,26 @@ groups:
         annotations:
           summary: "Backup capacity below capture and reserve requirement"
           description: "Provision storage or review the deletion dry run; preserve complete recovery points."
+
+      - alert: SDLDBLocalRunWithoutOffsiteCopy
+        expr: backup_storage_local_without_offsite_runs{exported_job="sdl_db_backup",service="mysql",env="pilot"} > 0
+        for: 1h
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Local backup run has no verified offsite copy"
+          description: "A local logical dump is held without a verified complete S3 point. Upload it or confirm the S3 object before any local deletion."
+
+      - alert: SDLDBLocalBackupCountOverLimit
+        expr: |
+          backup_storage_local_max_backups{exported_job="sdl_db_backup",service="mysql",env="pilot"} > 0
+          and
+          backup_storage_local_payload_runs{exported_job="sdl_db_backup",service="mysql",env="pilot"} > backup_storage_local_max_backups{exported_job="sdl_db_backup",service="mysql",env="pilot"}
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Local backup count is over its configured limit"
+          description: "Protected or unverified runs are held above BACKUP_LOCAL_MAX_BACKUPS. Captures continue on verified disk capacity; review the held runs."

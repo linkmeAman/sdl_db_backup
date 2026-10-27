@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,6 +17,57 @@ import (
 	"testing"
 	"time"
 )
+
+func TestBusyBackupLeavesActiveRunStateUntouched(t *testing.T) {
+	for _, inProcess := range []bool{false, true} {
+		name := "shared lock"
+		if inProcess {
+			name = "in process"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := Config{
+				BackupDir:   filepath.Join(root, "backups"),
+				LogDir:      filepath.Join(root, "logs"),
+				LockFile:    filepath.Join(root, "backup.lock"),
+				RunLogPath:  filepath.Join(root, "history.jsonl"),
+				MetricsFile: filepath.Join(root, "metrics.prom"),
+			}
+			activeMetrics := []byte("sdl_db_backup_in_progress 1\n")
+			activeHistory := []byte("{\"run_id\":\"active\"}\n")
+			for path, data := range map[string][]byte{cfg.MetricsFile: activeMetrics, cfg.RunLogPath: activeHistory} {
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if inProcess {
+				backupRunMutex.Lock()
+				defer backupRunMutex.Unlock()
+			} else {
+				release, err := acquireLock(cfg.LockFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+			result, err := RunBackup(context.Background(), cfg, RunSinks{Console: io.Discard})
+			if !errors.Is(err, ErrBackupBusy) || result.RunID != "" {
+				t.Fatalf("expected busy without a new run, got run=%+v err=%v", result, err)
+			}
+			for path, want := range map[string][]byte{cfg.MetricsFile: activeMetrics, cfg.RunLogPath: activeHistory} {
+				got, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("active run state changed at %s: %q err=%v", path, got, err)
+				}
+			}
+			for _, path := range []string{cfg.LogDir, cfg.BackupDir} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("busy run created %s: %v", path, err)
+				}
+			}
+		})
+	}
+}
 
 func TestBuildMySQLDumpArgsOmitDatabasesFlag(t *testing.T) {
 	args := buildMySQLDumpArgs("app_db", nil, []string{"broken_view"})

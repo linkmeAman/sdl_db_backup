@@ -106,7 +106,7 @@ func scanStorageRuns(root, current string) ([]storageRun, []StorageDecision, err
 }
 
 // All operations are anchored to O_NOFOLLOW directory descriptors. Manifests,
-// keys, physical streams, directories and files outside the exact run are not
+// keys, physical streams and files outside the exact run are not payload
 // candidates, even if a path is swapped for a symlink before restart.
 func unlinkStoragePayload(root string, expected StorageDecision) (int64, error) {
 	if _, err := time.Parse(runTimestampLayout, expected.RunID); err != nil {
@@ -175,15 +175,16 @@ func unlinkStoragePayload(root string, expected StorageDecision) (int64, error) 
 }
 
 type storageDeletionAudit struct {
-	Decision        StorageDecision     `json:"decision"`
-	At              time.Time           `json:"at"`
-	Outcome         string              `json:"outcome"`
-	RemovedBytes    int64               `json:"removed_payload_bytes"`
-	ReclaimedBytes  uint64              `json:"measured_reclaimed_bytes"`
-	ProtectedLocal  []string            `json:"protected_local"`
-	ProtectedRemote []string            `json:"protected_remote"`
-	RemoteProof     *StorageRemoteProof `json:"remote_verification,omitempty"`
-	Error           string              `json:"error,omitempty"`
+	Decision                StorageDecision      `json:"decision"`
+	At                      time.Time            `json:"at"`
+	Outcome                 string               `json:"outcome"`
+	RemovedBytes            int64                `json:"removed_payload_bytes"`
+	ReclaimedBytes          uint64               `json:"measured_reclaimed_bytes"`
+	ProtectedLocal          []string             `json:"protected_local"`
+	ProtectedRemote         []string             `json:"protected_remote"`
+	RemoteProof             *StorageRemoteProof  `json:"remote_verification,omitempty"`
+	SupersedingRemoteProofs []StorageRemoteProof `json:"superseding_remote_verification,omitempty"`
+	Error                   string               `json:"error,omitempty"`
 }
 
 func auditPath(cfg config, d StorageDecision) string {
@@ -243,6 +244,13 @@ func (m *storageManager) deleteCandidate(ctx context.Context, root string, d Sto
 			return e
 		}
 		audit.RemoteProof = &proof
+	} else if d.Type == "expired_complete_logical" {
+		if e = m.authorizeCountExpiry(d, proofs, *r); e != nil {
+			return e
+		}
+		for _, id := range r.ProtectedRemote {
+			audit.SupersedingRemoteProofs = append(audit.SupersedingRemoteProofs, proofs[id])
+		}
 	} else if d.Type != "disposable_failed_temporary" {
 		return fmt.Errorf("candidate has no verified offsite counterpart")
 	}
@@ -274,8 +282,8 @@ func (m *storageManager) deleteCandidate(ctx context.Context, root string, d Sto
 	}
 	updateStorageDecision(r, d.Path, "DELETED", d.Reason)
 	log.Printf("automatic local cleanup run=%s type=%s path=%s removed=%d reclaimed=%d reason=%s remote=%s", d.RunID, d.Type, d.Path, removed, audit.ReclaimedBytes, d.Reason, d.Remote)
-	// Recovery metadata remains in the original run directory. Never rewrite the
-	// immutable manifest or remove an entire backup folder.
+	// Record eviction before removing a now metadata-only folder. The central
+	// deletion journal and offsite manifest retain the recovery audit.
 	eviction := struct {
 		At     time.Time `json:"at"`
 		File   string    `json:"removed_file"`
@@ -283,7 +291,15 @@ func (m *storageManager) deleteCandidate(ctx context.Context, root string, d Sto
 		Audit  string    `json:"audit"`
 	}{m.now().UTC(), d.Name, d.Remote, auditPath(m.cfg, d)}
 	b, _ := json.Marshal(eviction)
-	return atomicWriteFile(filepath.Join(root, d.RunID, "local-storage-state.json"), append(b, '\n'), 0600)
+	if err := atomicWriteFile(filepath.Join(root, d.RunID, "local-storage-state.json"), append(b, '\n'), 0600); err != nil {
+		return err
+	}
+	if pruned, err := pruneStorageRunMetadata(m.cfg, root, d.RunID, false); err != nil {
+		log.Printf("obsolete metadata cleanup deferred run=%s reason=%v", d.RunID, err)
+	} else if pruned {
+		r.MetadataFolders = append(r.MetadataFolders, d.RunID)
+	}
+	return nil
 }
 func (m *storageManager) recoverIntents(ctx context.Context, root string, candidates []StorageDecision, proofs map[string]StorageRemoteProof, r *StorageReport, logical bool) error {
 	paths, e := filepath.Glob(filepath.Join(m.cfg.LogDir, "storage-deletions", "*.json"))

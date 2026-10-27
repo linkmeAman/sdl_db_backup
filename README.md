@@ -461,8 +461,13 @@ With `BACKUP_STORAGE_AUTO_CLEANUP=true`, set `BACKUP_LOCAL_MAX_BACKUPS=4` to
 keep at most four local logical dump runs. The default `0` disables the count
 limit; a configured limit must be at least three. Cleanup reserves a slot
 before capture and deletes older payloads only after independent local/offsite
-verification. Metadata and S3 history remain. Protected or unverified artifacts
-can block cleanup and a new capture when the limit cannot be met safely.
+verification. If an independent S3 retention policy has already removed an old
+complete run, count retention can expire it once the configured newer local
+window and two newer complete offsite points are independently verified. This
+exception applies only while over the explicit count limit; incomplete, scoped,
+pinned, restore-tested and recovery-dependent runs remain held. Existing S3
+copies are never removed by this application. With sufficient disk capacity,
+held artifacts produce a warning rather than stopping the next capture.
 
 Preview with `./sdl-db-backup storage-plan`; enforce the configured policy
 without starting a capture with `./sdl-db-backup storage-cleanup`.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,28 @@ import (
 
 	"sdl/sdl_db_backup/internal/backupapp"
 )
+
+func TestBusyManualBackupReturnsToPreview(t *testing.T) {
+	m := newModel(".env", zeroConfigForTUITest())
+	m.running = true
+	m.backupStep = stepRunning
+	m.manualMode = backupapp.ManualRunLogicalOnly
+	m.manualUpload = backupapp.ManualUploadNormal
+	updatedModel, _ := m.Update(runFinishedMsg{err: fmt.Errorf("lock: %w", backupapp.ErrBackupBusy)})
+	updated := updatedModel.(model)
+	if updated.running || updated.backupStep != stepPreview || updated.manualSelected != 2 {
+		t.Fatalf("busy backup did not return to Start backup: running=%v step=%v selected=%v", updated.running, updated.backupStep, updated.manualSelected)
+	}
+	if updated.runErr != "" || updated.runResult != nil {
+		t.Fatal("busy attempt shown as a completed or failed capture")
+	}
+	if updated.manualMode != m.manualMode || updated.manualUpload != m.manualUpload || !strings.Contains(strings.Join(updated.runPreview.Warnings, " "), "wait for it to finish") {
+		t.Fatal("busy preview lost manual settings or retry guidance")
+	}
+	if updated.runConfig.ExecutionSource != "tui" || !strings.Contains(strings.Join(updated.runPreview.Lines, " "), "Execution source: tui") {
+		t.Fatal("manual run preview does not identify the TUI source")
+	}
+}
 
 func TestRunProgressStateTracksDatabaseProgress(t *testing.T) {
 	var progress runProgressState

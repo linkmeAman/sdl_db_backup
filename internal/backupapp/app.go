@@ -18,6 +18,9 @@ import (
 
 const runTimestampLayout = "2006-01-02_15-04-05"
 
+// ErrBackupBusy means no new capture started because another run owns the lock.
+var ErrBackupBusy = errors.New("another backup run is already active; wait for it to finish, then retry")
+
 type PhysicalBackupResult = physicalBackupResult
 
 type physicalBackupResult struct {
@@ -632,7 +635,10 @@ func acquireLock(lockFile string) (func(), error) {
 	}
 	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
-		return nil, fmt.Errorf("another backup run is already active: %w", err)
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("%w: %w", ErrBackupBusy, err)
+		}
+		return nil, fmt.Errorf("acquire backup lock: %w", err)
 	}
 	// Reject an active legacy O_EXCL owner before adopting this lock file.
 	data, e := io.ReadAll(file)
@@ -642,7 +648,7 @@ func acquireLock(lockFile string) (func(), error) {
 	}
 	if stale, pid := isLockStale(string(data)); !stale && pid != os.Getpid() {
 		file.Close()
-		return nil, fmt.Errorf("another legacy backup run is active (pid=%d)", pid)
+		return nil, fmt.Errorf("%w (legacy pid=%d)", ErrBackupBusy, pid)
 	}
 	if err = file.Truncate(0); err != nil {
 		file.Close()
@@ -874,7 +880,7 @@ var backupRunMutex sync.Mutex
 
 func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, error) {
 	if !backupRunMutex.TryLock() {
-		return RunResult{}, fmt.Errorf("another backup run is already active in this process")
+		return RunResult{}, ErrBackupBusy
 	}
 	defer backupRunMutex.Unlock()
 	if ctx == nil {
@@ -894,6 +900,13 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 	if zoneErr != nil {
 		return RunResult{}, fmt.Errorf("invalid schedule timezone: %w", zoneErr)
 	}
+	// Own the shared lock before creating logs/history or publishing metrics.
+	// A rejected invocation must leave the active run's status untouched.
+	releaseLock, err := acquireLock(cfg.LockFile)
+	if err != nil {
+		return RunResult{}, err
+	}
+	defer releaseLock()
 	scheduleNow := startedAt.In(location)
 	runID := startedAt.Format(runTimestampLayout)
 	if _, err := os.Stat(filepath.Join(cfg.BackupDir, runID)); err == nil {
@@ -993,14 +1006,6 @@ func RunBackup(ctx context.Context, cfg Config, sinks RunSinks) (RunResult, erro
 		record.ExitCode = finalizeRun(cfg, &record, startedAt)
 		return record, nil
 	}
-
-	releaseLock, err := acquireLock(cfg.LockFile)
-	if err != nil {
-		record.FailureReason = err.Error()
-		record.ExitCode = finalizeRun(cfg, &record, startedAt)
-		return record, nil
-	}
-	defer releaseLock()
 
 	statePath := filepath.Join(cfg.LogDir, "backup-schedule-state.json")
 	state := loadScheduleState(statePath)

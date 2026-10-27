@@ -49,6 +49,10 @@ type StorageReport struct {
 	ProtectionChecked bool                 `json:"protection_checked"`
 	LocalBackupLimit  int                  `json:"local_backup_limit,omitempty"`
 	LocalBackupCount  int                  `json:"local_backup_count"`
+	// LocalWithoutOffsite lists retained local logical runs without a complete S3
+	// marker. Count-expired complete runs can be superseded by newer verified points.
+	LocalWithoutOffsite []string `json:"local_without_offsite,omitempty"`
+	MetadataFolders     []string `json:"obsolete_metadata_folders,omitempty"`
 }
 type storageRun struct {
 	r      runRecord
@@ -188,6 +192,10 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	if err = storagePolicy(m.cfg); err != nil {
 		return report, err
 	}
+	report.MetadataFolders, err = pruneStorageMetadata(m.cfg, current, dry)
+	if err != nil {
+		return report, err
+	}
 	limit := m.cfg.StorageMaxLocalBackups
 	if limit > 0 && current != "" && logical {
 		limit--
@@ -210,6 +218,7 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 				return m.blocked(report, "initial recovery protection verification unavailable: "+checkErr.Error(), logical)
 			}
 			checked.DryRun = false
+			checked.MetadataFolders = append(report.MetadataFolders, checked.MetadataFolders...)
 			if checked.State == "DRY_RUN" {
 				checked.State = "SAFE"
 			}
@@ -221,6 +230,7 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 
 		report.ProtectedRemote = prior.ProtectedRemote
 		report.RemoteProofs = prior.RemoteProofs
+		report.LocalWithoutOffsite = append([]string(nil), prior.LocalWithoutOffsite...)
 		report.ProtectionChecked = false
 		return report, nil
 	}
@@ -270,29 +280,45 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	}
 	// Protect at least two independently verified complete offsite points. Never
 	// perform remote deletion, and never count a partial/legacy completion marker.
-	listing, err := listS3Prefix(ctx, m.cfg, strings.Trim(m.cfg.S3LogicalPrefix, "/"))
-	if err != nil {
-		return m.blocked(report, "cannot establish offsite recovery coverage: "+err.Error(), logical)
+	prefixes := map[string]bool{strings.Trim(m.cfg.S3LogicalPrefix, "/"): true}
+	for _, run := range runs {
+		prior, e := storageConfigForDestination(m.cfg, run.r.S3Destination, run.r.RunID)
+		if e == nil {
+			prefixes[strings.Trim(prior.S3LogicalPrefix, "/")] = true
+		}
 	}
 	ids := map[string]bool{}
-	for _, o := range listing.Objects {
-		rel := strings.TrimPrefix(o.Key, strings.Trim(m.cfg.S3LogicalPrefix, "/")+"/")
-		parts := strings.Split(rel, "/")
-		if len(parts) == 2 && parts[1] == "COMPLETED.json" {
-			if _, e := time.Parse(runTimestampLayout, parts[0]); e == nil {
+	remoteIDs := map[string]bool{}
+	for prefix := range prefixes {
+		listing, e := listS3Prefix(ctx, m.cfg, prefix)
+		if e != nil {
+			return m.blocked(report, "cannot establish offsite recovery coverage: "+e.Error(), logical)
+		}
+		for _, o := range listing.Objects {
+			rel := strings.TrimPrefix(o.Key, prefix+"/")
+			parts := strings.Split(rel, "/")
+			if len(parts) != 2 {
+				continue
+			}
+			if _, e := time.Parse(runTimestampLayout, parts[0]); e != nil {
+				continue
+			}
+			if parts[1] == "COMPLETED.json" {
 				ids[parts[0]] = true
+				remoteIDs[parts[0]] = true
+			} else if parts[1] == "PARTIAL.json" {
+				remoteIDs[parts[0]] = true
 			}
 		}
 	}
-	remoteIDs := map[string]bool{}
-	for id := range ids {
-		remoteIDs[id] = true
-	}
-	for _, o := range listing.Objects {
-		rel := strings.TrimPrefix(o.Key, strings.Trim(m.cfg.S3LogicalPrefix, "/")+"/")
-		parts := strings.Split(rel, "/")
-		if len(parts) == 2 && parts[1] == "PARTIAL.json" {
-			remoteIDs[parts[0]] = true
+	report.LocalWithoutOffsite = nil
+	for _, r := range runs {
+		payload := false
+		for _, f := range r.files {
+			payload = payload || isStoragePayload(f.Name)
+		}
+		if payload && !ids[r.r.RunID] {
+			report.LocalWithoutOffsite = append(report.LocalWithoutOffsite, r.r.RunID)
 		}
 	}
 	ordered := []string{}
@@ -355,7 +381,17 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 				f.Type = "complete_logical"
 				f.Reason = "obsolete local duplicate with independently verified full logical S3 counterpart"
 				f.RemoteRunID = r.r.RunID
-				f.Remote = "s3://" + m.cfg.S3Bucket + "/" + strings.Trim(m.cfg.S3LogicalPrefix, "/") + "/" + r.r.RunID
+				prior, e := storageConfigForDestination(m.cfg, r.r.S3Destination, r.r.RunID)
+				if e != nil {
+					f.Reason = e.Error()
+					report.Decisions = append(report.Decisions, f)
+					continue
+				}
+				f.Remote = "s3://" + prior.S3Bucket + "/" + strings.Trim(prior.S3LogicalPrefix, "/") + "/" + r.r.RunID
+				candidates = append(candidates, f)
+			} else if overLimit && !remoteIDs[r.r.RunID] && storageCompleteLogicalRecord(m.cfg, r.r) && referencedStoragePayload(r.r, f) {
+				f.Type = "expired_complete_logical"
+				f.Reason = "configured local count retention; superseded by newer verified local and offsite recovery points"
 				candidates = append(candidates, f)
 			} else if r.r.Status == "failed" || r.r.Status == "partial" {
 				for _, id := range report.ProtectedRemote {
@@ -397,7 +433,7 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 	})
 	if dry {
 		for i, candidate := range candidates {
-			if candidate.Type == "complete_logical" {
+			if candidate.Type == "complete_logical" || candidate.Type == "expired_complete_logical" {
 				if _, e := m.authorizeCandidate(ctx, candidate, proofs, &report); e != nil {
 					updateStorageDecision(&report, candidate.Path, "HOLD", e.Error())
 					continue
@@ -499,13 +535,25 @@ func (m *storageManager) ensure(ctx context.Context, current string, logical, dr
 			return report, e
 		}
 		report.LocalBackupCount = count
+		// Capacity has already been proven above. A count over the limit only
+		// means cleanup had to hold artifacts it cannot yet prove deletable, so it
+		// must not stop the local capture; disk space remains the hard guard.
 		if count > limit {
-			return report, fmt.Errorf("local backup limit unmet: %d payload runs remain, limit %d; unverified or protected artifacts held", count, limit)
+			log.Printf("WARNING local backup count %d exceeds limit %d; %d protected or unverified runs held; capture continues on verified capacity", count, limit, count-limit)
 		}
 	}
 	if report.RemovedBytes > 0 {
 		report.State = "CLEANED"
 	}
+	// Removed count-expired runs must no longer appear as retained offsite gaps.
+	report.LocalWithoutOffsite = slices.DeleteFunc(report.LocalWithoutOffsite, func(id string) bool {
+		for _, d := range report.Decisions {
+			if d.RunID == id && isStoragePayload(d.Name) && fileExists(d.Path) {
+				return false
+			}
+		}
+		return true
+	})
 	report.ForecastDays = storageForecast(m.cfg, capacity)
 	return report, nil
 }
@@ -679,6 +727,9 @@ func referencedStoragePayload(r runRecord, f StorageDecision) bool {
 }
 func (m *storageManager) authorizeCandidate(ctx context.Context, d StorageDecision, proofs map[string]StorageRemoteProof, r *StorageReport) (StorageRemoteProof, error) {
 	if d.RemoteRunID == "" {
+		if d.Type == "expired_complete_logical" {
+			return StorageRemoteProof{}, m.authorizeCountExpiry(d, proofs, *r)
+		}
 		if d.Type == "disposable_failed_temporary" {
 			return StorageRemoteProof{}, nil
 		}

@@ -223,8 +223,8 @@ func TestStoragePressureDeletesOldestStopsAndKeepsLatestTwo(t *testing.T) {
 	}
 	assertPointPresent(t, points["2026-10-05_12-00-00"])
 	assertPointPresent(t, points["2026-10-04_12-00-00"])
-	if !fileExists(filepath.Join(cfg.BackupDir, "2026-10-01_12-00-00", "manifest.json")) {
-		t.Fatal("recovery manifest deleted")
+	if fileExists(filepath.Join(cfg.BackupDir, "2026-10-01_12-00-00")) {
+		t.Fatal("obsolete backup folder was retained")
 	}
 	if len(r.ProtectedRemote) != 2 || len(r.ProtectedLocal) != 2 {
 		t.Fatal("coverage invariant")
@@ -444,6 +444,62 @@ func TestStorageS3FullIntegrityAndMissingObjects(t *testing.T) {
 	}
 	if e = checkStorageRemoteIdentity(context.Background(), cfg, proof); e == nil {
 		t.Fatal("changed remote identity accepted")
+	}
+}
+
+func TestStoragePrefixChangeKeepsHistoricalProtection(t *testing.T) {
+	cfg, _, m, points, s3 := storagePoints(t, 5)
+	for id, r := range points {
+		r.S3Destination = "s3://bucket/logical/" + id
+		if err := writeManifest(r.RunFolder, r); err != nil {
+			t.Fatal(err)
+		}
+		points[id] = r
+		s3.add(t, r)
+	}
+	cfg.S3LogicalPrefix = "new-logical"
+	cfg.StorageMaxLocalBackups = 4
+	m.cfg = cfg
+	m.remote = verifyStorageRemote
+	m.remoteLogical = verifyStorageRemoteLogical
+	m.identity = checkStorageRemoteIdentity
+	report, err := m.ensure(context.Background(), "new", true, false)
+	if err != nil || len(report.ProtectedRemote) != 2 || report.LocalBackupCount != 3 || report.RemovedBytes == 0 {
+		t.Fatalf("prefix change broke verified cleanup: %+v err=%v", report, err)
+	}
+	for _, proof := range report.RemoteProofs {
+		if proof.State != "VERIFIED" || proof.Destination != "s3://bucket/logical/"+proof.RunID {
+			t.Fatalf("historical proof used new upload destination: %+v", proof)
+		}
+	}
+	if cfg.S3LogicalPrefix != "new-logical" {
+		t.Fatal("historical verification changed the new upload prefix")
+	}
+}
+
+func TestStorageRecordedDestinationValidation(t *testing.T) {
+	id := "2026-10-22_12-29-11"
+	cfg := config{S3Bucket: "bucket", S3LogicalPrefix: "logical", S3Endpoint: "https://configured-endpoint"}
+	for _, destination := range []string{
+		"s3://other-bucket/old/" + id,
+		"https://bucket/old/" + id,
+		"s3://bucket/old/other-run",
+		"s3://bucket/old/../logical/" + id,
+		"s3://bucket/old/" + id + "?query=1",
+		"s3://bucket/old/" + id + "#fragment",
+		"s3://user@bucket/old/" + id,
+	} {
+		if _, err := storageConfigForDestination(cfg, destination, id); err == nil {
+			t.Fatalf("unsafe destination accepted: %s", destination)
+		}
+	}
+	prior, err := storageConfigForDestination(cfg, "s3://bucket/logical-hold/logical/"+id, id)
+	if err != nil || prior.S3LogicalPrefix != "logical-hold/logical" || prior.S3Bucket != cfg.S3Bucket || prior.S3Endpoint != cfg.S3Endpoint {
+		t.Fatalf("recorded destination not isolated to prefix: %+v err=%v", prior, err)
+	}
+	legacy, err := storageConfigForDestination(cfg, "", id)
+	if err != nil || legacy.S3LogicalPrefix != cfg.S3LogicalPrefix {
+		t.Fatal("legacy destination fallback changed")
 	}
 }
 func TestStorageConcurrentSchedulerAndCleanup(t *testing.T) {
@@ -814,12 +870,15 @@ func TestStorageCountRetentionRefusesUnverifiedCounterpart(t *testing.T) {
 	v.available = 9000
 	delete(points, "2026-10-01_12-00-00")
 	report, err := m.ensure(context.Background(), "", true, false)
-	if err == nil || report.State != "CRITICAL" {
-		t.Fatal("unverifiable deletion must block an unmet count cap")
+	if err != nil {
+		t.Fatalf("capacity is sufficient, so an unmet count cap must not block local capture: %v", err)
 	}
 	count, _ := localPayloadRunCount(cfg.BackupDir)
 	if count != 5 {
-		t.Fatalf("unexpected deletion: count=%d", count)
+		t.Fatalf("unverified run deleted: count=%d", count)
+	}
+	if report.LocalBackupCount != 5 {
+		t.Fatalf("report did not record held count: %+v", report)
 	}
 }
 
@@ -932,8 +991,11 @@ func TestStorageCountRetentionWithRealPartialIdentityRecheck(t *testing.T) {
 	for day := 3; day <= 6; day++ {
 		assertPointPresent(t, points[fmt.Sprintf("2026-10-%02d_12-00-00", day)])
 	}
-	original, err := readManifest(old.RunFolder)
-	if err != nil || original.RecoveryState != "PARTIAL" {
-		t.Fatal("historical manifest was changed")
+	if fileExists(old.RunFolder) {
+		t.Fatal("obsolete partial backup folder was retained")
+	}
+	var original runRecord
+	if err := json.Unmarshal(s3.objects[prefix+"manifest.json"], &original); err != nil || original.RecoveryState != "PARTIAL" {
+		t.Fatal("historical offsite manifest was changed")
 	}
 }

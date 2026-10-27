@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+func TestValidationMetricsPreserveStorageProtection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metrics.prom")
+	want := backupMetricsSnapshot{StorageReclaimed: 12345, StorageProtectedLocal: 3, StorageProtectedRemote: 2, StorageManagerCritical: 1, StorageAutoEnabled: 1, RunTimestamp: 1792653787, Status: 1}
+	if err := writeBackupMetricsFile(path, want, ""); err != nil {
+		t.Fatal(err)
+	}
+	emitValidationMetrics(Config{MetricsFile: path}, 1)
+	got := readExistingBackupMetricsSnapshot(path)
+	if got.StorageReclaimed != want.StorageReclaimed || got.StorageProtectedLocal != want.StorageProtectedLocal || got.StorageProtectedRemote != want.StorageProtectedRemote || got.StorageManagerCritical != want.StorageManagerCritical || got.StorageAutoEnabled != want.StorageAutoEnabled || got.RunTimestamp != want.RunTimestamp || got.Status != want.Status || got.LogicalValidationStatus != 1 {
+		t.Fatalf("validation erased existing capture/storage state: %+v", got)
+	}
+}
+
 func TestLoadConfigWithOverridesReadsMetricsFile(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")

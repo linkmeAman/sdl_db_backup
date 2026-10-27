@@ -196,6 +196,7 @@ func waitForRunLog(ch <-chan string) tea.Cmd {
 
 func runBackup(cfg backupapp.Config, ch chan string) tea.Cmd {
 	return func() tea.Msg {
+		cfg.ExecutionSource = "tui"
 		result, err := backupapp.RunBackup(context.Background(), cfg, backupapp.RunSinks{Console: logChannelWriter{ch: ch}})
 		close(ch)
 		return runFinishedMsg{result: result, err: err}

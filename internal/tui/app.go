@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -616,7 +617,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runFinishedMsg:
 		m.running = false
 		m.backupStep = stepDone
-		if msg.err != nil {
+		if errors.Is(msg.err, backupapp.ErrBackupBusy) {
+			m.backupStep = stepPreview
+			m.manualSelected = 2
+			m.runResult = nil
+			m.runErr = ""
+			m.rebuildPreview()
+			m.runPreview.Warnings = append(m.runPreview.Warnings, msg.err.Error())
+			m.pushToast("info", "Backup already running. Wait for it to finish, then retry Start backup.")
+		} else if msg.err != nil {
 			m.runErr = msg.err.Error()
 			m.pushToast("error", "backup failed")
 		} else {
@@ -890,7 +899,9 @@ func (m model) maxManualSelection() int {
 }
 
 func (m *model) rebuildPreview() {
-	cfg, preview, err := backupapp.BuildManualRunConfig(m.draft, backupapp.ManualRunOptions{
+	base := m.draft
+	base.ExecutionSource = "tui"
+	cfg, preview, err := backupapp.BuildManualRunConfig(base, backupapp.ManualRunOptions{
 		Mode:          m.manualMode,
 		UploadMode:    m.manualUpload,
 		ForceNow:      m.manualForce,

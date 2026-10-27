@@ -50,3 +50,26 @@ func persistFinalRunMetadata(folder string, record runRecord) error {
 	}
 	return atomicWriteFile(filepath.Join(folder, "execution-finalization.json"), append(audit, '\n'), 0600)
 }
+
+// verifyCommittedManifest confirms the on-disk manifest is still the exact file
+// that an earlier upload committed. A re-publish may reuse it unchanged, but
+// must never rewrite it.
+func verifyCommittedManifest(folder string) error {
+	data, err := os.ReadFile(filepath.Join(folder, "manifest-commit.json"))
+	if err != nil {
+		return err
+	}
+	var commit manifestCommit
+	if err = json.Unmarshal(data, &commit); err != nil {
+		return err
+	}
+	manifest, err := os.ReadFile(filepath.Join(folder, "manifest.json"))
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256(manifest)
+	if commit.SHA256 != hex.EncodeToString(hash[:]) {
+		return fmt.Errorf("committed manifest checksum mismatch; refusing re-publish")
+	}
+	return nil
+}

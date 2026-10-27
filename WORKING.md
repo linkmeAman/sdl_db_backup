@@ -207,7 +207,13 @@ Only regular single-link eligible payloads under validated timestamp run
 folders can be unlinked through anchored directory descriptors. Deletion
 requires independently verified local protection and at least two complete
 verified S3 points; each candidate's S3 counterpart and file identity are
-rechecked immediately before deletion. After the last eligible payload is
+rechecked immediately before deletion. Explicit count retention also permits an
+old complete logical run whose S3 marker has expired to be removed while over
+the count limit: the configured newer local window and two newer full-scope
+verified S3 points must remain protected. Partial, scoped, pinned, restore-tested
+or recovery-dependent runs do not qualify. The deletion journal records the
+superseding offsite proofs, and their live identities are checked before unlink.
+After the last eligible payload is
 removed, known per-run metadata and its timestamp directory are removed too.
 Metadata-only leftovers are swept on subsequent cleanup and capture invocations.
 Pins, recovery dependencies, active runs and unknown or linked files are held.

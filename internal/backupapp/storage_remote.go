@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -81,6 +84,11 @@ func verifyStorageRemoteCapture(ctx context.Context, cfg config, id string, allo
 	proof := StorageRemoteProof{RunID: id, State: "UNVERIFIED", RestoreState: "UNVERIFIED"}
 	if _, err := time.Parse(runTimestampLayout, id); err != nil {
 		return proof, fmt.Errorf("invalid recovery run id")
+	}
+	var err error
+	cfg, err = storageRemoteConfig(cfg, id)
+	if err != nil {
+		return proof, err
 	}
 	prefix := strings.Trim(cfg.S3LogicalPrefix, "/") + "/" + id
 	proof.Destination = "s3://" + cfg.S3Bucket + "/" + prefix
@@ -263,6 +271,39 @@ func verifyStorageRemoteCapture(ctx context.Context, cfg config, id string, allo
 	return proof, nil
 }
 
+// A prefix change affects new uploads. Historical recovery checks follow the
+// recorded destination, retaining the configured bucket, credentials and endpoint.
+func storageConfigForDestination(cfg config, destination, id string) (config, error) {
+	if destination == "" {
+		return cfg, nil // Legacy metadata uses the configured prefix.
+	}
+	u, err := url.Parse(destination)
+	if err != nil || u.Scheme != "s3" || u.Host != cfg.S3Bucket || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return cfg, fmt.Errorf("invalid recorded S3 destination for run %s", id)
+	}
+	key := strings.TrimPrefix(u.Path, "/")
+	prefix, ok := strings.CutSuffix(key, "/"+id)
+	if !ok || prefix == "" || key != path.Clean(key) || strings.HasPrefix(key, "/") {
+		return cfg, fmt.Errorf("recorded S3 destination does not match run %s", id)
+	}
+	cfg.S3LogicalPrefix = prefix
+	return cfg, nil
+}
+
+func storageRemoteConfig(cfg config, id string) (config, error) {
+	r, err := readManifest(filepath.Join(cfg.BackupDir, id))
+	if os.IsNotExist(err) {
+		return cfg, nil // Remote-only points can still be checked in the current prefix.
+	}
+	if err != nil {
+		return cfg, err
+	}
+	if r.RunID != id {
+		return cfg, fmt.Errorf("local manifest run ID mismatch")
+	}
+	return storageConfigForDestination(cfg, r.S3Destination, id)
+}
+
 type storageCountReader struct {
 	reader io.Reader
 	n      int64
@@ -292,6 +333,11 @@ func checkStorageRemoteIdentity(ctx context.Context, cfg config, p StorageRemote
 	empty := sha256.Sum256(nil)
 	if p.State != "VERIFIED" || time.Since(p.VerifiedAt) > time.Hour {
 		return fmt.Errorf("remote verification is absent or expired")
+	}
+	var err error
+	cfg, err = storageConfigForDestination(cfg, p.Destination, p.RunID)
+	if err != nil {
+		return err
 	}
 	for _, o := range p.Objects {
 		err := withS3Retry(ctx, func() error {

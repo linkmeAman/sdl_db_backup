@@ -146,12 +146,18 @@ are not rejected as out of order.
 runs, independently of disk pressure. The runner reserves one slot before
 capture, retaining three independently verified local points before writing the
 fourth. Obsolete payloads are unlinked after full verification of their exact
-offsite counterpart. When the last eligible payload is removed, known metadata
+offsite counterpart. If an independent S3 policy has expired that counterpart,
+an old complete logical run outside the explicit local count window may instead
+expire after verification of the entire newer local window and two newer
+complete offsite points. This count-only exception does not apply to partial,
+scoped, pinned, restore-tested or recovery-dependent runs, and the application
+does not change S3 retention. When the last eligible payload is removed, known metadata
 and the obsolete timestamp folder are removed too, and existing metadata-only
 leftovers are swept automatically; central deletion audits and S3 history are
 retained. Pins, restore evidence, unknown artifacts and physical/binlog
-dependencies still prevent unsafe deletion; an unmet limit blocks another
-capture rather than growing local payload storage.
+dependencies still prevent unsafe deletion. With sufficient verified capture
+capacity, an unmet count limit is reported as a warning; insufficient space
+still blocks the next capture.
 
 A combined run whose only failure is its physical task may have its logical
 payload independently verified for retention. Its committed PARTIAL manifest
